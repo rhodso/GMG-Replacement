@@ -1,0 +1,20 @@
+
+Frontend: 
+- Track HP
+- Track AC
+- Track Initiative
+- Roll Initiative & Sort tokens by order
+- Buttons for Fwd/Back
+- Retaining current round / turn upon initiative order change (i.e. new tokens adding or being removed from initiative order)
+- UI not "small" but constrained to left side
+
+Tokens:
+- Display HP & AC (with option for public or GM-only viewing)
+- Highlight current token taking turn
+- statblock object attached to token
+
+Statblock:
+- Minimum of HP, AC, Initiative Bonus
+- Retrieve from server
+- Save to either browser local storage or room storage
+

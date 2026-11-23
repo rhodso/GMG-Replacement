@@ -1,0 +1,20 @@
+{
+	"name": "Character Name",
+	"HP": 100,
+	"MxHP": 200,
+	"TmpHP": 10,
+	"AC": 15,
+	"Group": "Players",
+	"Attached Player": "Name"
+}
+
+Name: Stores character name. Matches token name for auto-assignment
+HP: Stores character current HP
+MxHP: Stores character max HP
+TmpHP: Stores character temporary HP
+AC: Stores characte current AC
+Group: What group the character belongs to, also controls visibility
+	P... : Player-controlled characters. Players can see all stats
+	A... : NPC characters. Players can see all stats
+	E... : NPC characters. Player can only see some stats
+Attached Player: If player exists in current session, auto-attach token to be controlled by player
