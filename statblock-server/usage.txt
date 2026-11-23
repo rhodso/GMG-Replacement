@@ -1,0 +1,10 @@
+
+Test if up:
+api.php?request=-1
+
+Get list:
+api.php?request=0
+
+Get statblock:
+api.php?request=1&sb=[name]
+

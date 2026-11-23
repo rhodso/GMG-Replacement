@@ -1,0 +1,10 @@
+{
+	"name": "Character Name",
+	"HP": 100,
+	"MxHP": 200,
+	"TmpHP": 10,
+	"AC": 15,
+	"Group": "Players",
+	"Attached Player": "Name",
+	"InitBns": 2
+}
