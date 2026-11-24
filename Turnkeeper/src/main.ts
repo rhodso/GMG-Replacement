@@ -503,6 +503,7 @@ function stopCombat(): void {
 	activeCharacter = null
 	initiativeRolls.clear()
   	conditions.clear()
+	void updateAllTokenDrawings()
 }
 
 // Next or previous turn in initiative
@@ -531,6 +532,10 @@ function changeTurn(direction: number): void {
 	} else {
 		activeCharacter = order[nextIndex]
 	}
+
+	// Redraw token overlays
+	void updateAllTokenDrawings()
+
 }
 
 // Character grouping
@@ -702,6 +707,8 @@ function deleteGroup(group: string): void {
 	if (index !== -1) {
 		groups.splice(index, 1)
 	}
+
+	void updateAllTokenDrawings()
 }
 
 
@@ -903,11 +910,57 @@ async function updateTokenDrawing(character: Character): Promise<void> {
 			maxHp: character.maxHp,
 			tempHp: character.tempHp,
 			ac: character.ac,
-			condition: conditions.get(character) ?? ''
+			condition: conditions.get(character) ?? '',
+			isCurrentTurn: activeCharacter === character
 		})
 	} catch (error) {
 		console.error('Failed to draw token:', error)
 	}
+}
+
+async function removeTokensFromTurnkeeper(tokenIds: string[]): Promise<void> {
+	const tokensToClear: string[] = []
+	let activeCharacterRemoved = false
+
+	for (const tokenId of tokenIds) {
+		const character = tokenToCharacter.get(tokenId)
+
+		// Ignore tokens that aren't currently tracked.
+		if (!character) continue
+
+		tokensToClear.push(tokenId)
+
+		// Remove the character from our tracking maps.
+		tokenToCharacter.delete(tokenId)
+		characterToToken.delete(character)
+
+		// Remove encounter-specific data.
+		initiativeRolls.delete(character)
+		initiativeBonuses.delete(character)
+		conditions.delete(character)
+
+		// Remove the character from the main character list.
+		const index = characters.indexOf(character)
+		if (index !== -1) {
+			characters.splice(index, 1)
+		}
+
+		// Clear the active turn if this character had it.
+		if (activeCharacter === character) {
+			activeCharacter = null
+			activeCharacterRemoved = true
+		}
+	}
+
+	// Remove all Turnkeeper drawings from the affected tokens.
+	await Promise.all(tokensToClear.map(tokenId => clearTokenDrawing(tokenId)))
+
+	// Refresh the remaining drawings if the active character was removed.
+	if (activeCharacterRemoved) {
+		await Promise.all(characters.map(character => updateTokenDrawing(character)))
+	}
+
+	render()
 }
 
 // Render the groups
@@ -966,6 +1019,11 @@ function renderGroup(group: string, members: Character[]): string {
 	`
 }
 
+async function updateAllTokenDrawings(): Promise<void> {
+	await Promise.all(
+		characters.map(character => updateTokenDrawing(character))
+	)
+}
 
 // Main render function
 function render(): void {
@@ -1343,9 +1401,11 @@ app.addEventListener('dragend', () => {
 // Character names will be matched against the filenames.
 // No statblock ID needs to be stored on the token.
 
-// Context menu for "Add to Turnkeeper interaction"
+// Context menus for Turnkeeper
 const EXTENSION_ID = 'com.rhodso.turnkeeper'
+
 async function setupTurnkeeperContextMenu(): Promise<void> {
+	// Add to Turnkeeper
 	await OBR.contextMenu.create({
 		id: `${EXTENSION_ID}/add-to-turnkeeper`,
 		icons: [
@@ -1370,18 +1430,40 @@ async function setupTurnkeeperContextMenu(): Promise<void> {
 			await addTokensToTurnkeeper(tokens)
 		}
 	})
+
+	// Remove from Turnkeeper
+	await OBR.contextMenu.create({
+		id: `${EXTENSION_ID}/remove-from-turnkeeper`,
+		icons: [
+			{
+				icon: '/turnkeeper-remove.svg',
+				label: 'Remove from Turnkeeper',
+				filter: {
+					roles: ['GM'],
+					permissions: ['UPDATE'],
+					every: [
+						{ key: 'layer', value: 'CHARACTER' }
+					]
+				}
+			}
+		],
+		async onClick(context) {
+			const tokenIds = context.items.map(item => item.id)
+			await removeTokensFromTurnkeeper(tokenIds)
+		}
+	})
 }
 
 render()
 
-// Register the Owlbear context menu only once the SDK is ready
+// Register the Owlbear context menus only once the SDK is ready
 if (OBR.isAvailable) {
 	OBR.onReady(() => {
 		void setupTurnkeeperContextMenu().catch(error => {
-			console.error('Failed to register Turnkeeper context menu:', error)
+			console.error('Failed to register Turnkeeper context menus:', error)
 
 			void OBR.notification.show(
-				'Failed to register Turnkeeper context menu.',
+				'Failed to register Turnkeeper context menus.',
 				'ERROR'
 			)
 		})

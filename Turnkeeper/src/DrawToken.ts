@@ -6,6 +6,7 @@ export interface TokenDisplayData {
 	tempHp: number
 	ac: number
 	condition: string
+	isCurrentTurn?: boolean
 }
 
 type ShapeType = 'RECTANGLE' | 'CIRCLE' | 'TRIANGLE' | 'HEXAGON'
@@ -76,6 +77,13 @@ const LAYOUT = {
 		charWidth: 0.56,
 		background: '#454545',
 		strokeWidth: 1
+	},
+
+	// Current Turn Highlight
+	turnHighlight: {
+		color: '#ffd54a',
+		inset: 0.045,
+		strokeWidth: 0.025
 	}
 }
 
@@ -98,7 +106,8 @@ function createShape(
 	zIndex: number,
 	stroke: string = fill,
 	shapeType: ShapeType = 'RECTANGLE',
-	strokeWidth: number = 1
+	strokeWidth: number = 1,
+	fillOpacity: number = 1
 ) {
 	return buildShape()
 		.name(`${PREFIX}${tokenId}/${name}`)
@@ -110,7 +119,7 @@ function createShape(
 			y: centerY - height / 2
 		})
 		.fillColor(fill)
-		.fillOpacity(1)
+		.fillOpacity(fillOpacity)
 		.strokeColor(stroke)
 		.strokeOpacity(1)
 		.strokeWidth(strokeWidth)
@@ -202,6 +211,37 @@ export async function drawToken(
 	const getZIndex = () => nextZIndex++
 
 	const items = []
+
+	// Current Turn Highlight
+	if (data.isCurrentTurn) {
+		const highlightStrokeWidth = Math.max(
+			2,
+			minDimension * LAYOUT.turnHighlight.strokeWidth
+		)
+
+		// Account for half the stroke width so it remains inside the token.
+		const highlightInset =
+			minDimension * LAYOUT.turnHighlight.inset +
+			highlightStrokeWidth / 2
+
+		const highlightWidth = tokenWidth - highlightInset * 2
+		const highlightHeight = tokenHeight - highlightInset * 2
+
+		items.push(createShape(
+			tokenId,
+			'TurnHighlight',
+			centerX,
+			bounds.center.y,
+			highlightWidth,
+			highlightHeight,
+			LAYOUT.turnHighlight.color,
+			getZIndex(),
+			LAYOUT.turnHighlight.color,
+			'RECTANGLE',
+			highlightStrokeWidth,
+			0
+		))
+	}
 
 	// HP Bar
 	const barWidth = tokenWidth * LAYOUT.hpBar.width
