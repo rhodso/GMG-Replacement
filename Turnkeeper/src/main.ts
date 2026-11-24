@@ -15,6 +15,7 @@ interface Character {
 
 type GroupCategory = 'P' | 'A' | 'E' | 'U'
 
+// All of this is temporary and will be replaced eventually with the stuff from API calls
 interface Statblock {
 	filename: string
 	name: string
@@ -63,63 +64,13 @@ const statblocks: Statblock[] = [
 	}
 ]
 
-// Sample character data
-// const characters: Character[] = [
-// 	{
-// 		name: 'Arannis',
-// 		hp: 85,
-// 		maxHp: 100,
-// 		tempHp: 10,
-// 		ac: 18,
-// 		group: 'P_Players',
-// 		attachedPlayer: 'Player 1'
-// 	},
-// 	{
-// 		name: 'Mira',
-// 		hp: 62,
-// 		maxHp: 75,
-// 		tempHp: 0,
-// 		ac: 16,
-// 		group: 'P_Players',
-// 		attachedPlayer: 'Player 2'
-// 	},
-// 	{
-// 		name: 'Town Guard',
-// 		hp: 22,
-// 		maxHp: 30,
-// 		tempHp: 0,
-// 		ac: 15,
-// 		group: 'A_Guards',
-// 		attachedPlayer: ''
-// 	},
-// 	{
-// 		name: 'Goblin Warrior',
-// 		hp: 12,
-// 		maxHp: 12,
-// 		tempHp: 0,
-// 		ac: 13,
-// 		group: 'E_Goblins',
-// 		attachedPlayer: ''
-// 	},
-// 	{
-// 		name: 'Goblin Archer',
-// 		hp: 5,
-// 		maxHp: 10,
-// 		tempHp: 0,
-// 		ac: 14,
-// 		group: 'E_Goblins',
-// 		attachedPlayer: ''
-// 	}
-// ]
-
 const characters: Character[] = []
 
-// Mock statblock information.
+// Mock statblock information
 // Initiative bonuses will eventually come from the statblock server
 const initiativeBonuses = new Map<Character, number>([])
 
 // Temporary associations between Owlbear tokens and characters
-// These are not part of the character data.
 const tokenToCharacter = new Map<string, Character>()
 const characterToToken = new Map<Character, string>()
 
@@ -133,7 +84,7 @@ const groups: string[] = [
 	...new Set(characters.map(character => character.group))
 ]
 
-// Currently dragged character.
+// Currently dragged character
 let draggedCharacter: Character | null = null
 
 let combatActive = false
@@ -173,17 +124,15 @@ function normaliseStatblockName(name: string): string {
 		.trim()
 }
 
+// Fuzzy search stuff for statblock fetching
 function levenshteinDistance(a: string, b: string): number {
 	const matrix: number[][] = []
 
-	for (let i = 0; i <= a.length; i++) {
-		matrix[i] = [i]
-	}
+	// Calculate numbers
+	for (let i = 0; i <= a.length; i++) { matrix[i] = [i] }
+	for (let j = 0; j <= b.length; j++) { matrix[0][j] = j }
 
-	for (let j = 0; j <= b.length; j++) {
-		matrix[0][j] = j
-	}
-
+	// Calculate difference
 	for (let i = 1; i <= a.length; i++) {
 		for (let j = 1; j <= b.length; j++) {
 			const cost = a[i - 1] === b[j - 1] ? 0 : 1
@@ -196,9 +145,12 @@ function levenshteinDistance(a: string, b: string): number {
 		}
 	}
 
+	// Regturn the matrix
 	return matrix[a.length][b.length]
 }
 
+// Name similarity for fuzzy search
+// Shouldn't be needed but nice to have
 function getNameSimilarity(a: string, b: string): number {
 	const nameA = normaliseStatblockName(a)
 	const nameB = normaliseStatblockName(b)
@@ -206,9 +158,11 @@ function getNameSimilarity(a: string, b: string): number {
 	if (!nameA || !nameB) return 0
 	if (nameA === nameB) return 1
 
+	// Get distance and maxlen
 	const distance = levenshteinDistance(nameA, nameB)
 	const maxLength = Math.max(nameA.length, nameB.length)
 
+	// Similarity for characters
 	const characterSimilarity = 1 - distance / maxLength
 
 	const wordsA = new Set(nameA.split(' '))
@@ -217,35 +171,26 @@ function getNameSimilarity(a: string, b: string): number {
 	const sharedWords = [...wordsA].filter(word => wordsB.has(word)).length
 	const totalWords = new Set([...wordsA, ...wordsB]).size
 
-	const wordSimilarity = totalWords > 0
-		? sharedWords / totalWords
-		: 0
-
+	// Calc actual similarity for whole word
+	const wordSimilarity = totalWords > 0 ? sharedWords / totalWords : 0
+	
 	// Character similarity carries more weight than word similarity.
 	return characterSimilarity * 0.8 + wordSimilarity * 0.2
 }
 
-function findClosestStatblock(
-	tokenName: string,
-	filenames: string[]
-): { filename: string; score: number } | null {
+// Find the statblock that most closely matches the name
+function findClosestStatblock( tokenName: string, filenames: string[] ): { filename: string; score: number } | null {
+	
+	// A one-liner to end all one liners
 	const matches = filenames
-		.map(filename => ({
-			filename,
-			score: getNameSimilarity(tokenName, filename)
-		}))
-		.sort((a, b) =>
-			b.score - a.score ||
-			a.filename.localeCompare(b.filename)
-		)
+		.map(filename => ({ filename, score: getNameSimilarity(tokenName, filename) }))
+		.sort((a, b) => b.score - a.score || a.filename.localeCompare(b.filename))
 
 	const bestMatch = matches[0]
 
-	// Don't automatically attach a completely unrelated statblock.
-	if (!bestMatch || bestMatch.score < 0.55) {
-		return null
-	}
-
+	// Don't automatically attach a completely unrelated statblock
+	if (!bestMatch || bestMatch.score < 0.55) { return null }
+	
 	return bestMatch
 }
 
@@ -254,30 +199,23 @@ interface TokenReference {
 	name: string
 }
 
-async function addTokensToTurnkeeper(
-	tokens: TokenReference[]
-): Promise<void> {
+async function addTokensToTurnkeeper( tokens: TokenReference[] ): Promise<void> {
 	if (tokens.length === 0) return
 
 	let filenames: string[]
 
-	try {
-		// Retrieve the list once, even when multiple tokens are selected.
+	try { // Retrieve the list once, even when multiple tokens are selected
 		filenames = await getStatblockList()
 	} catch (error) {
+		// On fail
 		console.error('Failed to retrieve statblock list:', error)
-		await OBR.notification.show(
-			'Unable to retrieve statblocks.',
-			'ERROR'
-		)
+		await OBR.notification.show( 'Unable to retrieve statblocks.', 'ERROR' )
 		return
 	}
 
+	// If no files
 	if (filenames.length === 0) {
-		await OBR.notification.show(
-			'No statblocks are available.',
-			'WARNING'
-		)
+		await OBR.notification.show( 'No statblocks are available.', 'WARNING' )
 		return
 	}
 
@@ -330,10 +268,7 @@ async function addTokensToTurnkeeper(
 		characters.push(character)
 
 		// Store initiative bonus separately from character data.
-		initiativeBonuses.set(
-			character,
-			statblock.initiativeBonus ?? 0
-		)
+		initiativeBonuses.set( character,  statblock.initiativeBonus ?? 0 )
 
 		// Remember which Owlbear token this character belongs to.
 		tokenToCharacter.set(token.id, character)
@@ -349,7 +284,7 @@ async function addTokensToTurnkeeper(
 
 	render()
 
-	// Report the results.
+	// Report the results
 	if (added > 0) {
 		await OBR.notification.show(
 			`Added ${added} character${added === 1 ? '' : 's'} to Turnkeeper.`,
@@ -403,6 +338,7 @@ function getGroupCategory(group: string): GroupCategory {
 	return 'U'
 }
 
+// Order categories
 function getCategoryOrder(group: string): number {
 	const order: Record<GroupCategory, number> = {
 		P: 0,
@@ -414,6 +350,7 @@ function getCategoryOrder(group: string): number {
 	return order[getGroupCategory(group)]
 }
 
+// Get thr label for the group
 function getGroupLabel(group: string): string {
 	if (group === 'Ungrouped') return 'Ungrouped'
 
@@ -424,10 +361,16 @@ function getGroupLabel(group: string): string {
 	return group
 }
 
+// For qiuck initiative
 function rollD20(): number {
 	return Math.floor(Math.random() * 20) + 1
 }
 
+// Apply HP input:
+// 20 + 5 = 25
+// 20 - 5 = 15
+// But also is clamped to max on heal
+// And also takes from tmphp first on damage
 function applyHpInput(character: Character, input: string): boolean {
 	const value = input.replace(/\s/g, '')
 
@@ -502,6 +445,7 @@ function rollCharacter(character: Character): void {
 	)
 }
 
+// Break initiative ties
 function compareInitiative(a: Character, b: Character): number {
 	const rollA = initiativeRolls.get(a)
 	const rollB = initiativeRolls.get(b)
@@ -534,6 +478,7 @@ function compareInitiative(a: Character, b: Character): number {
 	})
 }
 
+// Do the initaitve sorting
 function getInitiativeOrder(): Character[] {
 	return [...characters].sort(compareInitiative)
 }
@@ -551,14 +496,16 @@ function startCombat(): void {
 	activeCharacter = getInitiativeOrder()[0] ?? null
 }
 
+// When combat stops
 function stopCombat(): void {
 	combatActive = false
 	currentRound = 1
 	activeCharacter = null
 	initiativeRolls.clear()
-  conditions.clear()
+  	conditions.clear()
 }
 
+// Next or previous turn in initiative
 function changeTurn(direction: number): void {
 	const order = getInitiativeOrder()
 
@@ -759,6 +706,8 @@ function deleteGroup(group: string): void {
 
 
 // Rendering
+
+// Render each character card in the order
 function renderCharacterCard(character: Character): string {
 	const index = characters.indexOf(character)
 	const isActive = character === activeCharacter
@@ -942,6 +891,7 @@ function renderCharacterCard(character: Character): string {
 	`
 }
 
+// Draw HUD on token with needed information
 async function updateTokenDrawing(character: Character): Promise<void> {
 	const tokenId = characterToToken.get(character)
 
@@ -960,6 +910,7 @@ async function updateTokenDrawing(character: Character): Promise<void> {
 	}
 }
 
+// Render the groups
 function renderGroup(group: string, members: Character[]): string {
 	const isSystemGroup = group === 'Ungrouped'
 	const encodedGroup = encodeURIComponent(group)
@@ -1016,7 +967,7 @@ function renderGroup(group: string, members: Character[]): string {
 }
 
 
-
+// Main render function
 function render(): void {
 	// Preserve sidebar scroll position across renders
 	const scrollPosition =
@@ -1133,7 +1084,6 @@ function render(): void {
 		mainContent.scrollTop = scrollPosition
 	}
 }
-
 
 // Editing character and encounter data
 app.addEventListener('change', event => {
@@ -1274,7 +1224,7 @@ app.addEventListener('click', event => {
 	render()
 })
 
-
+// Dragging characters to sort them into categories
 app.addEventListener('dragstart', event => {
 	const target = event.target
 
@@ -1381,7 +1331,6 @@ app.addEventListener('dragend', () => {
 	})
 })
 
-// --------------------------------------------------
 // Future statblock API integration (currently disabled)
 //
 // API: https://richard.keithsoft.com/GMG_Rep/api.php
@@ -1393,10 +1342,9 @@ app.addEventListener('dragend', () => {
 // Statblock filenames will be the unique identifiers.
 // Character names will be matched against the filenames.
 // No statblock ID needs to be stored on the token.
-// --------------------------------------------------
 
+// Context menu for "Add to Turnkeeper interaction"
 const EXTENSION_ID = 'com.rhodso.turnkeeper'
-
 async function setupTurnkeeperContextMenu(): Promise<void> {
 	await OBR.contextMenu.create({
 		id: `${EXTENSION_ID}/add-to-turnkeeper`,
@@ -1426,7 +1374,7 @@ async function setupTurnkeeperContextMenu(): Promise<void> {
 
 render()
 
-// Register the Owlbear context menu once the SDK is ready.
+// Register the Owlbear context menu only once the SDK is ready
 if (OBR.isAvailable) {
 	OBR.onReady(() => {
 		void setupTurnkeeperContextMenu().catch(error => {

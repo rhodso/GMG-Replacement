@@ -24,8 +24,8 @@ const COLOURS = {
 	text: '#ffffff'
 }
 
-// All positioning and sizing values are configurable here.
-// Most dimensions and margins are multipliers of the token's dimensions.
+// All positioning and sizing values are configurable here
+// Most dimensions and margins are multipliers of the token's dimensions
 const LAYOUT = {
 	// HP bar
 	hpBar: {
@@ -179,10 +179,7 @@ export async function drawToken(
 
 	if (tokenWidth <= 0 || tokenHeight <= 0) return
 
-	// -------------------------------------------------------------------------
-	// REMOVE EXISTING DRAWING
-	// -------------------------------------------------------------------------
-
+	// Remove any existing drawing
 	const attachments = await OBR.scene.items.getItemAttachments([tokenId])
 
 	const oldItems = attachments.filter(item =>
@@ -206,10 +203,7 @@ export async function drawToken(
 
 	const items = []
 
-	// -------------------------------------------------------------------------
-	// HP BAR
-	// -------------------------------------------------------------------------
-
+	// HP Bar
 	const barWidth = tokenWidth * LAYOUT.hpBar.width
 
 	const barHeight = Math.max(
@@ -251,8 +245,8 @@ export async function drawToken(
 		? totalFillWidth * temporaryHp / totalHp
 		: 0
 
-	// Grey background representing the depleted portion of the bar.
-	// This MUST be rendered before the coloured HP segments.
+	// Grey background representing the depleted portion of the bar
+	// This MUST be rendered before the coloured HP segments
 	items.push(createShape(
 		tokenId,
 		'HPBackground',
@@ -267,7 +261,7 @@ export async function drawToken(
 		Math.max(1, minDimension * 0.012)
 	))
 
-	// Normal HP segment.
+	// Normal HP segment
 	if (normalWidth > 0) {
 		const normalCenterX =
 			barLeft + barInset + normalWidth / 2
@@ -284,7 +278,7 @@ export async function drawToken(
 		))
 	}
 
-	// Temporary HP segment.
+	// Temporary HP segment
 	if (temporaryWidth > 0) {
 		const temporaryCenterX =
 			barLeft + barInset + normalWidth + temporaryWidth / 2
@@ -301,7 +295,7 @@ export async function drawToken(
 		))
 	}
 
-	// HP text, drawn over the bar.
+	// HP text, drawn over the bar
 	const hpText = temporaryHp > 0
 		? `${normalHp}/${maximumHp} (+${temporaryHp})`
 		: `${normalHp}/${maximumHp}`
@@ -335,10 +329,7 @@ export async function drawToken(
 		LAYOUT.hpText.strokeWidth
 	))
 
-	// -------------------------------------------------------------------------
-	// AC SHIELD
-	// -------------------------------------------------------------------------
-
+	// AC Shield
 	const shieldWidth = minDimension * LAYOUT.ac.width
 	const shieldHeight = minDimension * LAYOUT.ac.height
 
@@ -390,10 +381,7 @@ export async function drawToken(
 		getZIndex()
 	))
 
-	// -------------------------------------------------------------------------
-	// CONDITION
-	// -------------------------------------------------------------------------
-
+	// Condition
 	const condition = data.condition.trim()
 
 	if (condition) {
@@ -420,7 +408,7 @@ export async function drawToken(
 			)
 		)
 
-		// Grey background behind the condition text.
+		// Grey background behind the condition text
 		items.push(createShape(
 			tokenId,
 			'ConditionBackground',
@@ -432,7 +420,7 @@ export async function drawToken(
 			getZIndex()
 		))
 
-		// Condition text on top of its background.
+		// Condition text on top of its background
 		items.push(createText(
 			tokenId,
 			'Condition',
@@ -447,10 +435,11 @@ export async function drawToken(
 		))
 	}
 
-	// Add all items in their assigned drawing order.
+	// Add all items in their assigned drawing order
 	await OBR.scene.items.addItems(items)
 }
 
+// Clear drawing
 export async function clearTokenDrawing(tokenId: string): Promise<void> {
 	const attachments = await OBR.scene.items.getItemAttachments([tokenId])
 
