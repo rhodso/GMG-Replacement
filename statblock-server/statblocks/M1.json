@@ -1,0 +1,11 @@
+{
+	"filename": "M1",
+	"name": "Marker 1",
+	"HP": 10,
+	"MxHP": 12,
+	"TmpHP": 5,
+	"AC": 15,
+	"Group": "P_Players",
+	"AttachedPlayer": "",
+	"initiativeBonus": 3
+}
