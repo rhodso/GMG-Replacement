@@ -32,11 +32,7 @@ function get_sb()
 {
 	// $list = scandir('statblocks');
 	$list = glob("./statblocks/*.json");
-	$new_list = array();
-	foreach ($list as $sb) {
-		$new_list[] = basename($sb);
-	}
-	return $new_list;
+	$new_list = array_map(function($x) {return basename($x)}, $list)
 }
 
 // Test requests
