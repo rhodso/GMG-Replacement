@@ -1,5 +1,7 @@
 
+import OBR from '@owlbear-rodeo/sdk'
 import './style.css'
+import { drawToken, clearTokenDrawing } from './DrawToken'
 
 interface Character {
 	name: string
@@ -13,64 +15,113 @@ interface Character {
 
 type GroupCategory = 'P' | 'A' | 'E' | 'U'
 
-// Sample character data
-const characters: Character[] = [
+interface Statblock {
+	filename: string
+	name: string
+	HP: number
+	MxHP: number
+	TmpHP: number
+	AC: number
+	Group: string
+	AttachedPlayer: string
+	initiativeBonus: number
+}
+
+const statblocks: Statblock[] = [
 	{
-		name: 'Arannis',
-		hp: 85,
-		maxHp: 100,
-		tempHp: 10,
-		ac: 18,
-		group: 'P_Players',
-		attachedPlayer: 'Player 1'
-	},
-	{
-		name: 'Mira',
-		hp: 62,
-		maxHp: 75,
-		tempHp: 0,
-		ac: 16,
-		group: 'P_Players',
-		attachedPlayer: 'Player 2'
-	},
-	{
-		name: 'Town Guard',
-		hp: 22,
-		maxHp: 30,
-		tempHp: 0,
-		ac: 15,
-		group: 'A_Guards',
-		attachedPlayer: ''
-	},
-	{
+		filename: 'Goblin Warrior',
 		name: 'Goblin Warrior',
-		hp: 12,
-		maxHp: 12,
-		tempHp: 0,
-		ac: 13,
-		group: 'E_Goblins',
-		attachedPlayer: ''
+		HP: 12,
+		MxHP: 12,
+		TmpHP: 0,
+		AC: 13,
+		Group: 'E_Goblins',
+		AttachedPlayer: '',
+		initiativeBonus: 2
 	},
 	{
-		name: 'Goblin Archer',
-		hp: 5,
-		maxHp: 10,
-		tempHp: 0,
-		ac: 14,
-		group: 'E_Goblins',
-		attachedPlayer: ''
+		filename: 'Arannis',
+		name: 'Arannis',
+		HP: 85,
+		MxHP: 100,
+		TmpHP: 10,
+		AC: 18,
+		Group: 'P_Players',
+		AttachedPlayer: '',
+		initiativeBonus: 3
+	},
+	{
+		filename: 'M1',
+		name: 'Marker 1',
+		HP: 10,
+		MxHP: 12,
+		TmpHP: 5,
+		AC: 15,
+		Group: 'P_Players',
+		AttachedPlayer: '',
+		initiativeBonus: 3
 	}
 ]
 
+// Sample character data
+// const characters: Character[] = [
+// 	{
+// 		name: 'Arannis',
+// 		hp: 85,
+// 		maxHp: 100,
+// 		tempHp: 10,
+// 		ac: 18,
+// 		group: 'P_Players',
+// 		attachedPlayer: 'Player 1'
+// 	},
+// 	{
+// 		name: 'Mira',
+// 		hp: 62,
+// 		maxHp: 75,
+// 		tempHp: 0,
+// 		ac: 16,
+// 		group: 'P_Players',
+// 		attachedPlayer: 'Player 2'
+// 	},
+// 	{
+// 		name: 'Town Guard',
+// 		hp: 22,
+// 		maxHp: 30,
+// 		tempHp: 0,
+// 		ac: 15,
+// 		group: 'A_Guards',
+// 		attachedPlayer: ''
+// 	},
+// 	{
+// 		name: 'Goblin Warrior',
+// 		hp: 12,
+// 		maxHp: 12,
+// 		tempHp: 0,
+// 		ac: 13,
+// 		group: 'E_Goblins',
+// 		attachedPlayer: ''
+// 	},
+// 	{
+// 		name: 'Goblin Archer',
+// 		hp: 5,
+// 		maxHp: 10,
+// 		tempHp: 0,
+// 		ac: 14,
+// 		group: 'E_Goblins',
+// 		attachedPlayer: ''
+// 	}
+// ]
+
+const characters: Character[] = []
+
 // Mock statblock information.
-// Initiative bonuses will eventually come from the statblock server.
-const initiativeBonuses = new Map<Character, number>([
-	[characters[0], 3],
-	[characters[1], 2],
-	[characters[2], 1],
-	[characters[3], 2],
-	[characters[4], 2]
-])
+// Initiative bonuses will eventually come from the statblock server
+const initiativeBonuses = new Map<Character, number>([])
+
+// Temporary associations between Owlbear tokens and characters
+// These are not part of the character data.
+const tokenToCharacter = new Map<string, Character>()
+const characterToToken = new Map<Character, string>()
 
 // Temporary encounter data and conditions
 const initiativeRolls = new Map<Character, number>()
@@ -93,6 +144,236 @@ const app = document.querySelector<HTMLDivElement>('#app')
 
 if (!app) {
 	throw new Error('Could not find #app element')
+}
+
+// Statblock Retrieval Helpers
+async function getStatblockList(): Promise<string[]> {
+	// Future API request:
+	// GET api.php?request=0
+
+	return statblocks.map(statblock => statblock.filename)
+}
+
+async function getStatblock(filename: string): Promise<Statblock | null> {
+	// Future API request:
+	// GET api.php?request=1&sb=[filename]
+
+	return statblocks.find(
+		statblock => statblock.filename === filename
+	) ?? null
+}
+
+function normaliseStatblockName(name: string): string {
+	return name
+		.normalize('NFD')
+		.replace(/[\u0300-\u036f]/g, '')
+		.toLowerCase()
+		.replace(/\.[a-z0-9]+$/i, '')
+		.replace(/[^a-z0-9]+/g, ' ')
+		.trim()
+}
+
+function levenshteinDistance(a: string, b: string): number {
+	const matrix: number[][] = []
+
+	for (let i = 0; i <= a.length; i++) {
+		matrix[i] = [i]
+	}
+
+	for (let j = 0; j <= b.length; j++) {
+		matrix[0][j] = j
+	}
+
+	for (let i = 1; i <= a.length; i++) {
+		for (let j = 1; j <= b.length; j++) {
+			const cost = a[i - 1] === b[j - 1] ? 0 : 1
+
+			matrix[i][j] = Math.min(
+				matrix[i - 1][j] + 1,
+				matrix[i][j - 1] + 1,
+				matrix[i - 1][j - 1] + cost
+			)
+		}
+	}
+
+	return matrix[a.length][b.length]
+}
+
+function getNameSimilarity(a: string, b: string): number {
+	const nameA = normaliseStatblockName(a)
+	const nameB = normaliseStatblockName(b)
+
+	if (!nameA || !nameB) return 0
+	if (nameA === nameB) return 1
+
+	const distance = levenshteinDistance(nameA, nameB)
+	const maxLength = Math.max(nameA.length, nameB.length)
+
+	const characterSimilarity = 1 - distance / maxLength
+
+	const wordsA = new Set(nameA.split(' '))
+	const wordsB = new Set(nameB.split(' '))
+
+	const sharedWords = [...wordsA].filter(word => wordsB.has(word)).length
+	const totalWords = new Set([...wordsA, ...wordsB]).size
+
+	const wordSimilarity = totalWords > 0
+		? sharedWords / totalWords
+		: 0
+
+	// Character similarity carries more weight than word similarity.
+	return characterSimilarity * 0.8 + wordSimilarity * 0.2
+}
+
+function findClosestStatblock(
+	tokenName: string,
+	filenames: string[]
+): { filename: string; score: number } | null {
+	const matches = filenames
+		.map(filename => ({
+			filename,
+			score: getNameSimilarity(tokenName, filename)
+		}))
+		.sort((a, b) =>
+			b.score - a.score ||
+			a.filename.localeCompare(b.filename)
+		)
+
+	const bestMatch = matches[0]
+
+	// Don't automatically attach a completely unrelated statblock.
+	if (!bestMatch || bestMatch.score < 0.55) {
+		return null
+	}
+
+	return bestMatch
+}
+
+interface TokenReference {
+	id: string
+	name: string
+}
+
+async function addTokensToTurnkeeper(
+	tokens: TokenReference[]
+): Promise<void> {
+	if (tokens.length === 0) return
+
+	let filenames: string[]
+
+	try {
+		// Retrieve the list once, even when multiple tokens are selected.
+		filenames = await getStatblockList()
+	} catch (error) {
+		console.error('Failed to retrieve statblock list:', error)
+		await OBR.notification.show(
+			'Unable to retrieve statblocks.',
+			'ERROR'
+		)
+		return
+	}
+
+	if (filenames.length === 0) {
+		await OBR.notification.show(
+			'No statblocks are available.',
+			'WARNING'
+		)
+		return
+	}
+
+	let added = 0
+	const failures: string[] = []
+	const alreadyAdded: string[] = []
+
+	for (const token of tokens) {
+		const tokenName = token.name.trim()
+
+		if (!tokenName) {
+			failures.push('Unnamed token')
+			continue
+		}
+
+		// Don't add a token that's already registered.
+		if (tokenToCharacter.has(token.id)) {
+			alreadyAdded.push(tokenName)
+			continue
+		}
+
+		// Find the closest statblock filename.
+		const match = findClosestStatblock(tokenName, filenames)
+
+		if (!match) {
+			failures.push(tokenName)
+			continue
+		}
+
+		// Retrieve the actual statblock.
+		const statblock = await getStatblock(match.filename)
+
+		if (!statblock) {
+			failures.push(tokenName)
+			continue
+		}
+
+		// Create the character using the token's name.
+		const character: Character = {
+			name: statblock.name || tokenName,
+			hp: statblock.HP,
+			maxHp: statblock.MxHP,
+			tempHp: statblock.TmpHP,
+			ac: statblock.AC,
+			group: statblock.Group || 'Ungrouped',
+			attachedPlayer: statblock.AttachedPlayer || ''
+		}
+
+		// Add the character to the application.
+		characters.push(character)
+
+		// Store initiative bonus separately from character data.
+		initiativeBonuses.set(
+			character,
+			statblock.initiativeBonus ?? 0
+		)
+
+		// Remember which Owlbear token this character belongs to.
+		tokenToCharacter.set(token.id, character)
+		characterToToken.set(character, token.id)
+
+		tokenToCharacter.set(token.id, character)
+		characterToToken.set(character, token.id)
+
+		await updateTokenDrawing(character)
+
+		added++
+	}
+
+	render()
+
+	// Report the results.
+	if (added > 0) {
+		await OBR.notification.show(
+			`Added ${added} character${added === 1 ? '' : 's'} to Turnkeeper.`,
+			failures.length > 0 || alreadyAdded.length > 0
+				? 'WARNING'
+				: 'SUCCESS'
+		)
+	}
+
+	if (failures.length > 0) {
+		console.warn('No matching statblock found for:', failures)
+
+		await OBR.notification.show(
+			`No matching statblock found for: ${failures.join(', ')}`,
+			'WARNING'
+		)
+	}
+
+	if (alreadyAdded.length > 0 && added === 0 && failures.length === 0) {
+		await OBR.notification.show(
+			'All selected tokens are already in Turnkeeper.',
+			'INFO'
+		)
+	}
 }
 
 // General helpers
@@ -135,9 +416,12 @@ function getCategoryOrder(group: string): number {
 
 function getGroupLabel(group: string): string {
 	if (group === 'Ungrouped') return 'Ungrouped'
-	if (getGroupCategory(group) === 'U') return group
 
-	return group.slice(1).replace(/^[_\s-]+/, '') || group
+	if (/^[PAE][_-]/i.test(group)) {
+		return group.slice(2).trim() || group
+	}
+
+	return group
 }
 
 function rollD20(): number {
@@ -450,6 +734,18 @@ function deleteGroup(group: string): void {
 			activeCharacter = null
 		}
 
+		const tokenId = characterToToken.get(character)
+
+		if (tokenId) {
+			tokenToCharacter.delete(tokenId)
+		}
+
+		characterToToken.delete(character)
+
+		if (tokenId) {
+			void clearTokenDrawing(tokenId)
+		}
+
 		characters.splice(i, 1)
 	}
 
@@ -646,7 +942,23 @@ function renderCharacterCard(character: Character): string {
 	`
 }
 
+async function updateTokenDrawing(character: Character): Promise<void> {
+	const tokenId = characterToToken.get(character)
 
+	if (!tokenId) return
+
+	try {
+		await drawToken(tokenId, {
+			hp: character.hp,
+			maxHp: character.maxHp,
+			tempHp: character.tempHp,
+			ac: character.ac,
+			condition: conditions.get(character) ?? ''
+		})
+	} catch (error) {
+		console.error('Failed to draw token:', error)
+	}
+}
 
 function renderGroup(group: string, members: Character[]): string {
 	const isSystemGroup = group === 'Ungrouped'
@@ -885,6 +1197,7 @@ app.addEventListener('change', event => {
 	}
 
 	render()
+	void updateTokenDrawing(character)
 })
 
 
@@ -1082,4 +1395,47 @@ app.addEventListener('dragend', () => {
 // No statblock ID needs to be stored on the token.
 // --------------------------------------------------
 
+const EXTENSION_ID = 'com.rhodso.turnkeeper'
+
+async function setupTurnkeeperContextMenu(): Promise<void> {
+	await OBR.contextMenu.create({
+		id: `${EXTENSION_ID}/add-to-turnkeeper`,
+		icons: [
+			{
+				icon: '/turnkeeper-add.svg',
+				label: 'Add to Turnkeeper',
+				filter: {
+					roles: ['GM'],
+					permissions: ['UPDATE'],
+					every: [
+						{ key: 'layer', value: 'CHARACTER' }
+					]
+				}
+			}
+		],
+		async onClick(context) {
+			const tokens = context.items.map(item => ({
+				id: item.id,
+				name: item.name
+			}))
+
+			await addTokensToTurnkeeper(tokens)
+		}
+	})
+}
+
 render()
+
+// Register the Owlbear context menu once the SDK is ready.
+if (OBR.isAvailable) {
+	OBR.onReady(() => {
+		void setupTurnkeeperContextMenu().catch(error => {
+			console.error('Failed to register Turnkeeper context menu:', error)
+
+			void OBR.notification.show(
+				'Failed to register Turnkeeper context menu.',
+				'ERROR'
+			)
+		})
+	})
+}
