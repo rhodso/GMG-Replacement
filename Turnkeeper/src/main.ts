@@ -270,6 +270,7 @@ function syncTrackedCharacters(items: Item[]): boolean {
 	// Remove characters that were deactivated or deleted.
 	for (const tokenId of [...tokenToCharacter.keys()]) {
 		if (!trackedTokenIds.has(tokenId)) {
+			void clearTokenDrawing(tokenId, currentUserRole === 'GM')
 			removeLocalCharacter(tokenId)
 			changed = true
 		}
@@ -589,11 +590,8 @@ async function initialiseScene(): Promise<void> {
 
 		render()
 
-		// The overlays are shared scene items. The GM refreshes them when
-		// the scene opens; players simply see the shared versions.
-		if (currentUserRole === 'GM') {
-			await updateAllTokenDrawings()
-		}
+		// Every user draws their own role-appropriate overlays.
+		await updateAllTokenDrawings()
 
 	} catch (error) {
 		console.error('Failed to initialise Turnkeeper scene:', error)
@@ -611,10 +609,7 @@ async function setupTurnkeeperPersistence(): Promise<void> {
 
 		if (syncTrackedCharacters(items)) {
 			render()
-
-			if (currentUserRole === 'GM') {
-				void updateAllTokenDrawings()
-			}
+			void updateAllTokenDrawings()
 		}
 	})
 
@@ -640,10 +635,7 @@ async function setupTurnkeeperPersistence(): Promise<void> {
 		const newDrawingState = getTokenDrawingStateSignature()
 
 		// Only redraw when conditions or the active turn actually changed.
-		if (
-			currentUserRole === 'GM' &&
-			previousDrawingState !== newDrawingState
-		) {
+		if (previousDrawingState !== newDrawingState) {
 			void updateAllTokenDrawings()
 		}
 	})
@@ -664,6 +656,7 @@ async function setupTurnkeeperPersistence(): Promise<void> {
 	OBR.player.onChange(player => {
 		currentUserRole = player.role
 		render()
+		void updateAllTokenDrawings()
 	})
 
 	// onReadyChange may not fire when the extension first opens in an
@@ -1763,6 +1756,7 @@ async function updateTokenDrawing(character: Character): Promise<void> {
 			ac: character.ac,
 			condition: conditions.get(character) ?? '',
 			isCurrentTurn: activeCharacter === character,
+			isGM: currentUserRole === 'GM',
 			isEnemy: ['E', 'U'].includes(getGroupCategory(character.group))
 		})
 	} catch (error) {
@@ -1785,7 +1779,7 @@ async function removeTokensFromTurnkeeper(tokenIds: string[]): Promise<void> {
 		removeLocalCharacter(tokenId)
 
 		// Remove the visible overlays, but not the underlying Owlbear token.
-		await clearTokenDrawing(tokenId)
+		await clearTokenDrawing(tokenId, currentUserRole === 'GM')
 	}
 
 	await persistSceneState()
@@ -1868,13 +1862,8 @@ async function updateAllTokenDrawings(): Promise<void> {
 }
 
 function refreshTurnkeeperUI(): void {
-	// Rebuild the sidebar from current in-memory data.
 	render()
-
-	// Only the GM should redraw shared scene overlays.
-	if (currentUserRole === 'GM') {
-		void updateAllTokenDrawings()
-	}
+	void updateAllTokenDrawings()
 }
 
 // Main render function

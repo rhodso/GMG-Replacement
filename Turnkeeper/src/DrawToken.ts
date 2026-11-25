@@ -7,6 +7,7 @@ export interface TokenDisplayData {
 	ac: number
 	condition: string
 	isCurrentTurn?: boolean
+	isGM?: boolean
 	isEnemy?: boolean
 }
 
@@ -22,10 +23,7 @@ function enqueueTokenOperation(
 	operation: () => Promise<void>
 ): Promise<void> {
 	const previous = tokenOperationQueues.get(tokenId) ?? Promise.resolve()
-
-	const current = previous
-		.catch(() => undefined)
-		.then(operation)
+	const current = previous.catch(() => undefined).then(operation)
 
 	tokenOperationQueues.set(tokenId, current)
 
@@ -48,8 +46,8 @@ const COLOURS = {
 	text: '#ffffff'
 }
 
-// All positioning and sizing values are configurable here
-// Most dimensions and margins are multipliers of the token's dimensions
+// All positioning and sizing values are configurable here.
+// Most dimensions and margins are multipliers of the token's dimensions.
 const LAYOUT = {
 	// HP bar
 	hpBar: {
@@ -59,7 +57,6 @@ const LAYOUT = {
 		inset: 0.01,
 		minHeight: 10
 	},
-
 	// HP text
 	hpText: {
 		fontSize: 0.56,
@@ -71,7 +68,6 @@ const LAYOUT = {
 		textOffsetX: -0.35,
 		textOffsetY: -0.09
 	},
-
 	// AC shield
 	ac: {
 		width: 0.26,
@@ -86,7 +82,6 @@ const LAYOUT = {
 		minFontSize: 8,
 		maxFontSize: 18
 	},
-
 	// Condition label
 	condition: {
 		width: 0.56,
@@ -101,8 +96,7 @@ const LAYOUT = {
 		background: '#454545',
 		strokeWidth: 1
 	},
-
-	// Current Turn Highlight
+	// Current turn highlight
 	turnHighlight: {
 		color: '#ffd54a',
 		inset: 0.045,
@@ -112,7 +106,6 @@ const LAYOUT = {
 
 function getHpColour(hp: number, maxHp: number): string {
 	const percentage = maxHp > 0 ? (hp / maxHp) * 100 : 0
-
 	if (percentage > 50) return COLOURS.healthy
 	if (percentage > 10) return COLOURS.wounded
 	return COLOURS.critical
@@ -196,6 +189,7 @@ async function drawTokenNow(
 	tokenId: string,
 	data: TokenDisplayData
 ): Promise<void> {
+	// Bounds are read from the shared token, not from this user's local overlays.
 	const bounds = await OBR.scene.items.getItemBounds([tokenId])
 	if (!bounds) return
 
@@ -211,38 +205,56 @@ async function drawTokenNow(
 
 	if (tokenWidth <= 0 || tokenHeight <= 0) return
 
-	// Remove any existing drawing
-	const attachments = await OBR.scene.items.getItemAttachments([tokenId])
-
-	const oldItems = attachments.filter(item =>
+	// Delete this user's previous overlays.
+	const localAttachments = await OBR.scene.local.getItemAttachments([tokenId])
+	const oldLocalItems = localAttachments.filter(item =>
 		item.name.startsWith(`${PREFIX}${tokenId}/`)
 	)
 
-	if (oldItems.length > 0) {
-		await OBR.scene.items.deleteItems(oldItems.map(item => item.id))
+	if (oldLocalItems.length > 0) {
+		await OBR.scene.local.deleteItems(oldLocalItems.map(item => item.id))
 	}
 
-	// Find the highest existing attachment z-index.
-	const sceneItems = await OBR.scene.items.getItems()
+	// Remove legacy shared overlays created by older Turnkeeper versions.
+	// Only the GM performs this migration cleanup; players never modify shared items.
+	if (data.isGM) {
+		const sharedAttachments = await OBR.scene.items.getItemAttachments([tokenId])
+		const oldSharedItems = sharedAttachments.filter(item =>
+			item.name.startsWith(`${PREFIX}${tokenId}/`)
+		)
 
-	let nextZIndex = sceneItems.reduce((highest, item) => {
+		if (oldSharedItems.length > 0) {
+			await OBR.scene.items.deleteItems(oldSharedItems.map(item => item.id))
+		}
+	}
+
+	// Calculate z-indexes for this user's local attachments.
+	const [sceneItems, localItems] = await Promise.all([
+		OBR.scene.items.getItems(),
+		OBR.scene.local.getItems()
+	])
+
+	const allItems = [...sceneItems, ...localItems]
+	let nextZIndex = allItems.reduce((highest, item) => {
 		return item.layer === 'ATTACHMENT'
 			? Math.max(highest, item.zIndex)
 			: highest
 	}, 0) + 1
 
 	const getZIndex = () => nextZIndex++
-
 	const items = []
 
-	// Current Turn Highlight
+	// GM sees full token details. Players see numeric HP and AC only for
+	// player/allied groups; enemy and ungrouped tokens remain restricted.
+	const showDetailedStats = data.isGM === true || data.isEnemy === false
+
+	// Current turn highlight: visible to everyone.
 	if (data.isCurrentTurn) {
 		const highlightStrokeWidth = Math.max(
 			2,
 			minDimension * LAYOUT.turnHighlight.strokeWidth
 		)
 
-		// Account for half the stroke width so it remains inside the token.
 		const highlightInset =
 			minDimension * LAYOUT.turnHighlight.inset +
 			highlightStrokeWidth / 2
@@ -266,9 +278,8 @@ async function drawTokenNow(
 		))
 	}
 
-	// HP Bar
+	// HP bar: visible to everyone.
 	const barWidth = tokenWidth * LAYOUT.hpBar.width
-
 	const barHeight = Math.max(
 		LAYOUT.hpBar.minHeight,
 		minDimension * LAYOUT.hpBar.height
@@ -280,17 +291,12 @@ async function drawTokenNow(
 		minDimension * LAYOUT.hpBar.bottomMargin
 
 	const barLeft = centerX - barWidth / 2
-
 	const normalHp = Math.max(0, data.hp)
 	const temporaryHp = Math.max(0, data.tempHp)
 	const maximumHp = Math.max(0, data.maxHp)
 	const totalHp = normalHp + temporaryHp
 
-	const barInset = Math.max(
-		1,
-		minDimension * LAYOUT.hpBar.inset
-	)
-
+	const barInset = Math.max(1, minDimension * LAYOUT.hpBar.inset)
 	const innerBarWidth = Math.max(0, barWidth - barInset * 2)
 	const innerBarHeight = Math.max(1, barHeight - barInset * 2)
 
@@ -299,17 +305,14 @@ async function drawTokenNow(
 		: 0
 
 	const totalFillWidth = innerBarWidth * totalPercentage
-
 	const normalWidth = totalHp > 0
 		? totalFillWidth * normalHp / totalHp
 		: 0
-
 	const temporaryWidth = totalHp > 0
 		? totalFillWidth * temporaryHp / totalHp
 		: 0
 
-	// Grey background representing the depleted portion of the bar
-	// This MUST be rendered before the coloured HP segments
+	// Grey background representing depleted HP.
 	items.push(createShape(
 		tokenId,
 		'HPBackground',
@@ -324,10 +327,9 @@ async function drawTokenNow(
 		Math.max(1, minDimension * 0.012)
 	))
 
-	// Normal HP segment
+	// Normal HP segment.
 	if (normalWidth > 0) {
-		const normalCenterX =
-			barLeft + barInset + normalWidth / 2
+		const normalCenterX = barLeft + barInset + normalWidth / 2
 
 		items.push(createShape(
 			tokenId,
@@ -341,7 +343,7 @@ async function drawTokenNow(
 		))
 	}
 
-	// Temporary HP segment
+	// Temporary HP segment.
 	if (temporaryWidth > 0) {
 		const temporaryCenterX =
 			barLeft + barInset + normalWidth + temporaryWidth / 2
@@ -358,96 +360,95 @@ async function drawTokenNow(
 		))
 	}
 
-	// HP text, drawn over the bar
-	if (!data.isEnemy){
-	const hpText = temporaryHp > 0
-		? `${normalHp}/${maximumHp} (+${temporaryHp})`
-		: `${normalHp}/${maximumHp}`
+	// Numerical HP text: GM and P/A tokens only.
+	if (showDetailedStats) {
+		const hpText = temporaryHp > 0
+			? `${normalHp}/${maximumHp} (+${temporaryHp})`
+			: `${normalHp}/${maximumHp}`
 
-	const availableTextWidth = barWidth * LAYOUT.hpText.width
+		const availableTextWidth = barWidth * LAYOUT.hpText.width
+		const maxFontSize = Math.min(
+			LAYOUT.hpText.maxFontSize,
+			barHeight * LAYOUT.hpText.fontSize
+		)
 
-	const maxFontSize = Math.min(
-		LAYOUT.hpText.maxFontSize,
-		barHeight * LAYOUT.hpText.fontSize
-	)
+		const maxWidthFontSize =
+			availableTextWidth / (hpText.length * LAYOUT.hpText.charWidth)
 
-	const maxWidthFontSize =
-		availableTextWidth /
-		(hpText.length * LAYOUT.hpText.charWidth)
+		const hpFontSize = Math.max(
+			LAYOUT.hpText.minFontSize,
+			Math.min(maxFontSize, maxWidthFontSize)
+		)
 
-	const hpFontSize = Math.max(
-		LAYOUT.hpText.minFontSize,
-		Math.min(maxFontSize, maxWidthFontSize)
-	)
-
-	items.push(createText(
-		tokenId,
-		'HPText',
-		hpText,
-		centerX + minDimension * LAYOUT.hpText.textOffsetX,
-		barCenterY + minDimension * LAYOUT.hpText.textOffsetY,
-		availableTextWidth,
-		barHeight,
-		hpFontSize,
-		getZIndex(),
-		LAYOUT.hpText.strokeWidth
-	))
-	
-
-	// AC Shield
-	const shieldWidth = minDimension * LAYOUT.ac.width
-	const shieldHeight = minDimension * LAYOUT.ac.height
-
-	const shieldCenterX =
-		right -
-		minDimension * LAYOUT.ac.rightMargin -
-		shieldWidth / 2
-
-	const shieldCenterY =
-		top +
-		minDimension * LAYOUT.ac.topMargin +
-		shieldHeight / 2
-
-	items.push(createShape(
-		tokenId,
-		'ACShield',
-		shieldCenterX,
-		shieldCenterY,
-		shieldWidth,
-		shieldHeight,
-		COLOURS.shield,
-		getZIndex(),
-		COLOURS.shieldBorder,
-		'HEXAGON',
-		Math.max(1, minDimension * 0.012)
-	))
-
-	const acTextCenterX =
-		shieldCenterX + minDimension * LAYOUT.ac.textOffsetX
-
-	const acTextCenterY =
-		shieldCenterY + minDimension * LAYOUT.ac.textOffsetY
-
-	items.push(createText(
-		tokenId,
-		'ACValue',
-		String(data.ac),
-		acTextCenterX,
-		acTextCenterY,
-		shieldWidth * LAYOUT.ac.textWidth,
-		shieldHeight * LAYOUT.ac.textHeight,
-		Math.max(
-			LAYOUT.ac.minFontSize,
-			Math.min(
-				LAYOUT.ac.maxFontSize,
-				minDimension * LAYOUT.ac.textFontSize
-			)
-		),
-		getZIndex()
-	))
+		items.push(createText(
+			tokenId,
+			'HPText',
+			hpText,
+			centerX + minDimension * LAYOUT.hpText.textOffsetX,
+			barCenterY + minDimension * LAYOUT.hpText.textOffsetY,
+			availableTextWidth,
+			barHeight,
+			hpFontSize,
+			getZIndex(),
+			LAYOUT.hpText.strokeWidth
+		))
 	}
 
-	// Condition
+	// AC shield and value: GM and P/A tokens only.
+	if (showDetailedStats) {
+		const shieldWidth = minDimension * LAYOUT.ac.width
+		const shieldHeight = minDimension * LAYOUT.ac.height
+
+		const shieldCenterX =
+			right -
+			minDimension * LAYOUT.ac.rightMargin -
+			shieldWidth / 2
+
+		const shieldCenterY =
+			top +
+			minDimension * LAYOUT.ac.topMargin +
+			shieldHeight / 2
+
+		items.push(createShape(
+			tokenId,
+			'ACShield',
+			shieldCenterX,
+			shieldCenterY,
+			shieldWidth,
+			shieldHeight,
+			COLOURS.shield,
+			getZIndex(),
+			COLOURS.shieldBorder,
+			'HEXAGON',
+			Math.max(1, minDimension * 0.012)
+		))
+
+		const acTextCenterX =
+			shieldCenterX + minDimension * LAYOUT.ac.textOffsetX
+
+		const acTextCenterY =
+			shieldCenterY + minDimension * LAYOUT.ac.textOffsetY
+
+		items.push(createText(
+			tokenId,
+			'ACValue',
+			String(data.ac),
+			acTextCenterX,
+			acTextCenterY,
+			shieldWidth * LAYOUT.ac.textWidth,
+			shieldHeight * LAYOUT.ac.textHeight,
+			Math.max(
+				LAYOUT.ac.minFontSize,
+				Math.min(
+					LAYOUT.ac.maxFontSize,
+					minDimension * LAYOUT.ac.textFontSize
+				)
+			),
+			getZIndex()
+		))
+	}
+
+	// Condition label: visible to everyone.
 	const condition = data.condition.trim()
 
 	if (condition) {
@@ -474,7 +475,6 @@ async function drawTokenNow(
 			)
 		)
 
-		// Grey background behind the condition text
 		items.push(createShape(
 			tokenId,
 			'ConditionBackground',
@@ -486,7 +486,6 @@ async function drawTokenNow(
 			getZIndex()
 		))
 
-		// Condition text on top of its background
 		items.push(createText(
 			tokenId,
 			'Condition',
@@ -501,20 +500,34 @@ async function drawTokenNow(
 		))
 	}
 
-	// Add all items in their assigned drawing order
-	await OBR.scene.items.addItems(items)
+	// Add the overlays only to this user's local scene layer.
+	await OBR.scene.local.addItems(items)
 }
 
-// Clear drawing
-async function clearTokenDrawingNow(tokenId: string): Promise<void> {
-	const attachments = await OBR.scene.items.getItemAttachments([tokenId])
-
-	const oldItems = attachments.filter(item =>
+async function clearTokenDrawingNow(
+	tokenId: string,
+	isGM: boolean
+): Promise<void> {
+	// Clear this user's local overlays.
+	const localAttachments = await OBR.scene.local.getItemAttachments([tokenId])
+	const oldLocalItems = localAttachments.filter(item =>
 		item.name.startsWith(`${PREFIX}${tokenId}/`)
 	)
 
-	if (oldItems.length > 0) {
-		await OBR.scene.items.deleteItems(oldItems.map(item => item.id))
+	if (oldLocalItems.length > 0) {
+		await OBR.scene.local.deleteItems(oldLocalItems.map(item => item.id))
+	}
+
+	// Clean up shared overlays left by older Turnkeeper releases.
+	if (isGM) {
+		const sharedAttachments = await OBR.scene.items.getItemAttachments([tokenId])
+		const oldSharedItems = sharedAttachments.filter(item =>
+			item.name.startsWith(`${PREFIX}${tokenId}/`)
+		)
+
+		if (oldSharedItems.length > 0) {
+			await OBR.scene.items.deleteItems(oldSharedItems.map(item => item.id))
+		}
 	}
 }
 
@@ -529,9 +542,12 @@ export function drawToken(
 	)
 }
 
-export function clearTokenDrawing(tokenId: string): Promise<void> {
+export function clearTokenDrawing(
+	tokenId: string,
+	isGM = false
+): Promise<void> {
 	return enqueueTokenOperation(
 		tokenId,
-		() => clearTokenDrawingNow(tokenId)
+		() => clearTokenDrawingNow(tokenId, isGM)
 	)
 }
