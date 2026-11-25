@@ -1617,7 +1617,7 @@ function renderCharacterCard(character: Character): string {
 		<article class="character-card ${isActive ? 'active' : ''}">
 			<div
 				class="character-avatar"
-				draggable="${!combatActive}"
+				draggable="${currentUserRole === 'GM' && !combatActive}"
 				data-index="${index}"
 				title="${combatActive ? '' : 'Drag to move between groups'}"
 			>
@@ -1759,7 +1759,8 @@ async function updateTokenDrawing(character: Character): Promise<void> {
 			tempHp: character.tempHp,
 			ac: character.ac,
 			condition: conditions.get(character) ?? '',
-			isCurrentTurn: activeCharacter === character
+			isCurrentTurn: activeCharacter === character,
+			isEnemy: ['E', 'U'].includes(getGroupCategory(character.group))
 		})
 	} catch (error) {
 		console.error('Failed to draw token:', error)
@@ -1818,24 +1819,25 @@ function renderGroup(
 				</div>
 
 				<div class="group-actions">
+				${currentUserRole === 'GM' ? `
 					${!redacted ? `
-					${!isSystemGroup ? `
-						<button
-							class="group-action-button"
-							data-action="rename-group"
-							data-group="${encodedGroup}"
-							title="Rename group"
-						>Rename</button>
+						${!isSystemGroup ? `
+							<button
+								class="group-action-button"
+								data-action="rename-group"
+								data-group="${encodedGroup}"
+								title="Rename group"
+							>Rename</button>
 
-						<button
-							class="group-action-button delete"
-							data-action="delete-group"
-							data-group="${encodedGroup}"
-							title="Delete group and its characters"
-						>Delete</button>
-					` : `
-						<span class="system-group-label">SYSTEM</span>
-					`}
+							<button
+								class="group-action-button delete"
+								data-action="delete-group"
+								data-group="${encodedGroup}"
+								title="Delete group and its characters"
+							>Delete</button>
+						` : `
+							<span class="system-group-label">SYSTEM</span>
+						`}
 					` : ''}
 
 					${!combatActive && members.length > 0 ? `
@@ -1845,7 +1847,8 @@ function renderGroup(
 							data-group="${encodedGroup}"
 						>Roll Group</button>
 					` : ''}
-				</div>
+				` : ''}
+			</div>
 			</div>
 
 			<div class="character-list">
@@ -1959,6 +1962,7 @@ function render(): void {
 					<strong>${String(currentRound).padStart(2, '0')}</strong>
 				</div>
 
+				${currentUserRole === 'GM' ? `
 				<div class="combat-controls">
 					<button
 						class="control-button combat-toggle ${combatActive ? 'stop' : 'start'}"
@@ -1983,6 +1987,7 @@ function render(): void {
 						aria-label="Next turn"
 					>›</button>
 				</div>
+				` : ''}
 			</section>
 
 			<main class="main-content">
@@ -1993,7 +1998,7 @@ function render(): void {
 					</div>
 
 					<div class="content-actions">
-						${!combatActive ? `
+						${currentUserRole === 'GM' && !combatActive ? `
 							<button
 								class="add-group-button"
 								data-action="add-group"
@@ -2141,10 +2146,17 @@ app.addEventListener('click', event => {
 		case 'roll-character': {
 			const character = characters[Number(button.dataset.index)]
 
-			if (character) {
-				rollCharacter(character)
+			// Only the GM or the token's owner can roll it.
+			if (!character || !canEditCharacter(character)) break
+
+			rollCharacter(character)
+
+			if (currentUserRole === 'GM') {
+				void persistSceneState()
+			} else {
+				void persistOwnedEncounterState(character)
 			}
-			void persistSceneState()
+
 			break
 		}
 
@@ -2160,12 +2172,51 @@ app.addEventListener('click', event => {
 			break
 		}
 
+		case 'toggle-combat':
+			if (currentUserRole !== 'GM') break
+
+			if (combatActive) {
+				stopCombat()
+			} else {
+				startCombat()
+			}
+			break
+
+		case 'previous-turn':
+			if (currentUserRole === 'GM' && combatActive) {
+				changeTurn(-1)
+			}
+			break
+
+		case 'next-turn':
+			if (currentUserRole === 'GM' && combatActive) {
+				changeTurn(1)
+			}
+			break
+
+		case 'roll-group': {
+			if (currentUserRole !== 'GM') break
+
+			const group = decodeURIComponent(button.dataset.group ?? '')
+
+			for (const character of characters) {
+				if (character.group === group) {
+					rollCharacter(character)
+				}
+			}
+
+			void persistSceneState()
+			break
+		}
+
 		case 'add-group':
-			if (!combatActive) addGroup()
+			if (currentUserRole === 'GM' && !combatActive) {
+				addGroup()
+			}
 			break
 
 		case 'rename-group': {
-			if (combatActive) break
+			if (currentUserRole !== 'GM' || combatActive) break
 
 			const group = decodeURIComponent(button.dataset.group ?? '')
 			renameGroup(group)
@@ -2173,7 +2224,7 @@ app.addEventListener('click', event => {
 		}
 
 		case 'delete-group': {
-			if (combatActive) break
+			if (currentUserRole !== 'GM' || combatActive) break
 
 			const group = decodeURIComponent(button.dataset.group ?? '')
 			void deleteGroup(group)
@@ -2186,6 +2237,7 @@ app.addEventListener('click', event => {
 
 // Dragging characters to sort them into categories
 app.addEventListener('dragstart', event => {
+	if (currentUserRole !== 'GM') return
 	const target = event.target
 
 	if (!(target instanceof Element) || combatActive) return
@@ -2213,6 +2265,7 @@ app.addEventListener('dragstart', event => {
 })
 
 app.addEventListener('dragover', event => {
+	if (currentUserRole !== 'GM') return
 	const target = event.target
 
 	if (!(target instanceof Element)) return
@@ -2233,6 +2286,7 @@ app.addEventListener('dragover', event => {
 })
 
 app.addEventListener('dragleave', event => {
+	if (currentUserRole !== 'GM') return
 	const target = event.target
 
 	if (!(target instanceof Element)) return

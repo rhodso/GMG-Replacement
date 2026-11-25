@@ -7,6 +7,7 @@ export interface TokenDisplayData {
 	ac: number
 	condition: string
 	isCurrentTurn?: boolean
+	isEnemy?: boolean
 }
 
 type ShapeType = 'RECTANGLE' | 'CIRCLE' | 'TRIANGLE' | 'HEXAGON'
@@ -358,6 +359,7 @@ async function drawTokenNow(
 	}
 
 	// HP text, drawn over the bar
+	if (!data.isEnemy){
 	const hpText = temporaryHp > 0
 		? `${normalHp}/${maximumHp} (+${temporaryHp})`
 		: `${normalHp}/${maximumHp}`
@@ -390,6 +392,7 @@ async function drawTokenNow(
 		getZIndex(),
 		LAYOUT.hpText.strokeWidth
 	))
+	
 
 	// AC Shield
 	const shieldWidth = minDimension * LAYOUT.ac.width
@@ -442,6 +445,7 @@ async function drawTokenNow(
 		),
 		getZIndex()
 	))
+	}
 
 	// Condition
 	const condition = data.condition.trim()
