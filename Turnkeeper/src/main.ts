@@ -15,6 +15,21 @@ interface Character {
 
 type GroupCategory = 'P' | 'A' | 'E' | 'U'
 
+// Role tracking
+type OwlbearRole = 'GM' | 'PLAYER'
+type PartyPlayer = Awaited<ReturnType<typeof OBR.party.getPlayers>>[number]
+
+interface RoomMember {
+	id: string
+	connectionId: string
+	role: OwlbearRole
+	isCurrentUser: boolean
+}
+
+let currentUserRole: OwlbearRole | null = null
+let currentUserName = ''
+let roomMembers: RoomMember[] = []
+
 // All of this is temporary and will be replaced eventually with the stuff from API calls
 interface Statblock {
 	filename: string
@@ -1031,6 +1046,22 @@ function render(): void {
 	const scrollPosition =
 		app!.querySelector('.main-content')?.scrollTop ?? 0
 
+	// Get user roles
+	const gmMembers = roomMembers.filter(member => member.role === 'GM')
+	const playerMembers = roomMembers.filter(member => member.role === 'PLAYER')
+
+	const roleTooltip = roomMembers.map(member => {
+		const name = member.isCurrentUser
+			? `${currentUserName} (you)`
+			: `User ${member.id.slice(0, 8)}`
+
+		return `${name}: ${member.role}`
+	}).join('\n')
+
+	const roleSummary = currentUserRole
+		? `${currentUserRole === 'GM' ? 'GM VIEW' : 'PLAYER VIEW'} · ${gmMembers.length} GM · ${playerMembers.length} PLAYER`
+		: 'CONNECTING TO OWLBEAR'
+
 	const content = combatActive
 		? `
 			<section class="combat-order">
@@ -1071,7 +1102,9 @@ function render(): void {
 						<span>Encounter Manager</span>
 					</div>
 				</div>
-				<span class="preview-label">PREVIEW</span>
+				<span class="preview-label" title="${escapeHtml(roleTooltip)}">
+					${roleSummary}
+				</span>
 			</header>
 
 			<section class="round-header">
@@ -1454,9 +1487,61 @@ async function setupTurnkeeperContextMenu(): Promise<void> {
 	})
 }
 
+// Retrieve the current user and everyone else in the room.
+async function refreshRoomPresence(
+	otherPlayers?: PartyPlayer[]
+): Promise<void> {
+	const [role, name, connectionId] = await Promise.all([
+		OBR.player.getRole(),
+		OBR.player.getName(),
+		OBR.player.getConnectionId()
+	])
+
+	const players = otherPlayers ?? await OBR.party.getPlayers()
+
+	currentUserRole = role
+	currentUserName = name
+
+	roomMembers = [
+		{
+			id: OBR.player.id,
+			connectionId,
+			role,
+			isCurrentUser: true
+		},
+		...players.map(player => ({
+			id: player.id,
+			connectionId: player.connectionId,
+			role: player.role,
+			isCurrentUser: false
+		}))
+	]
+
+	console.log('Turnkeeper room members:', roomMembers)
+
+	render()
+}
+
+// Start tracking changes to the room's membership and the current user's role.
+async function setupRoomRoleTracking(): Promise<void> {
+	OBR.party.onChange(players => {
+		void refreshRoomPresence(players).catch(error => {
+			console.error('Failed to update room members:', error)
+		})
+	})
+
+	OBR.player.onChange(() => {
+		void refreshRoomPresence().catch(error => {
+			console.error('Failed to update current user:', error)
+		})
+	})
+
+	await refreshRoomPresence()
+}
+
 render()
 
-// Register the Owlbear context menus only once the SDK is ready
+// Register the Owlbear context menus and do scene tracking only once the SDK is ready
 if (OBR.isAvailable) {
 	OBR.onReady(() => {
 		void setupTurnkeeperContextMenu().catch(error => {
@@ -1464,6 +1549,15 @@ if (OBR.isAvailable) {
 
 			void OBR.notification.show(
 				'Failed to register Turnkeeper context menus.',
+				'ERROR'
+			)
+		})
+
+		void setupRoomRoleTracking().catch(error => {
+			console.error('Failed to initialise room role tracking:', error)
+
+			void OBR.notification.show(
+				'Failed to load room players and roles.',
 				'ERROR'
 			)
 		})
