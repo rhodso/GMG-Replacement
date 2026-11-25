@@ -145,14 +145,8 @@ if (!app) {
 	throw new Error('Could not find #app element')
 }
 
-// -----------------------------------------------------------------------------
 // Local character state
-// -----------------------------------------------------------------------------
-
-function registerStoredCharacter(
-	tokenId: string,
-	record: StoredCharacterRecord
-): Character {
+function registerStoredCharacter(tokenId: string,record: StoredCharacterRecord): Character {
 	let character = tokenToCharacter.get(tokenId)
 
 	if (character) {
@@ -213,10 +207,7 @@ function removeLocalCharacter(tokenId: string): boolean {
 	return true
 }
 
-// -----------------------------------------------------------------------------
 // Reconcile character data with Owlbear's current scene items
-// -----------------------------------------------------------------------------
-
 function syncTrackedCharacters(items: Item[]): boolean {
 	const trackedTokenIds = new Set<string>()
 	let changed = false
@@ -292,10 +283,7 @@ function syncTrackedCharacters(items: Item[]): boolean {
 	return changed
 }
 
-// -----------------------------------------------------------------------------
 // Scene state
-// -----------------------------------------------------------------------------
-
 function resetLocalSceneState(): void {
 	characters.splice(0, characters.length)
 
@@ -553,10 +541,7 @@ async function persistOwnedEncounterState(
 	}
 }
 
-// -----------------------------------------------------------------------------
 // Scene loading
-// -----------------------------------------------------------------------------
-
 async function initialiseScene(): Promise<void> {
 	if (sceneInitializing) return
 
@@ -1529,10 +1514,7 @@ function renderCharacterCard(character: Character): string {
 		</div>
 	`
 
-	// -------------------------------------------------------------------------
 	// ENEMY: identifiable, but without numerical stats.
-	// -------------------------------------------------------------------------
-
 	if (restrictedEnemy) {
 		return `
 			<article class="character-card readonly-card enemy-readonly-card ${isActive ? 'active' : ''}">
@@ -1554,10 +1536,7 @@ function renderCharacterCard(character: Character): string {
 		`
 	}
 
-	// -------------------------------------------------------------------------
 	// FRIENDLY / ALLY: full information, read-only for other players.
-	// -------------------------------------------------------------------------
-
 	if (!canEdit) {
 		return `
 			<article class="character-card readonly-card readonly-detailed-card ${isActive ? 'active' : ''}">
@@ -1605,10 +1584,7 @@ function renderCharacterCard(character: Character): string {
 		`
 	}
 
-	// -------------------------------------------------------------------------
 	// GM / OWNER: full editable card.
-	// -------------------------------------------------------------------------
-
 	return `
 		<article class="character-card ${isActive ? 'active' : ''}">
 			<div
