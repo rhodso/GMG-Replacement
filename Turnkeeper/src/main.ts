@@ -1,7 +1,20 @@
 
-import OBR from '@owlbear-rodeo/sdk'
+import OBR, { type Item } from '@owlbear-rodeo/sdk'
 import './style.css'
 import { drawToken, clearTokenDrawing } from './DrawToken'
+
+import {
+	TURNKEEPER_EXTENSION_ID,
+	getCharacterLayerItems,
+	getStoredCharacterRecord,
+	getStoredSceneState,
+	parseSceneState,
+	setCharacterTracked,
+	writeCharacterRecord,
+	writeSceneState,
+	type StoredCharacterRecord,
+	type StoredSceneState
+} from './TurnkeeperStorage'
 
 interface Character {
 	name: string
@@ -93,6 +106,17 @@ const characterToToken = new Map<Character, string>()
 const initiativeRolls = new Map<Character, number>()
 const conditions = new Map<Character, string>()
 
+// Remember which statblock filename was used to initialise each character.
+const statblockFilenames = new Map<Character, string | null>()
+
+// Track the metadata versions we've already loaded, avoiding unnecessary redraws.
+const tokenMetadataSignatures = new Map<string, string>()
+
+// Owlbear room and scene state.
+let sceneReady = false
+let sceneInitializing = false
+let sceneGeneration = 0
+
 // Group definitions
 const groups: string[] = [
 	'Ungrouped',
@@ -110,6 +134,352 @@ const app = document.querySelector<HTMLDivElement>('#app')
 
 if (!app) {
 	throw new Error('Could not find #app element')
+}
+
+// -----------------------------------------------------------------------------
+// Local character state
+// -----------------------------------------------------------------------------
+
+function registerStoredCharacter(
+	tokenId: string,
+	record: StoredCharacterRecord
+): Character {
+	let character = tokenToCharacter.get(tokenId)
+
+	if (character) {
+		Object.assign(character, record.character)
+	} else {
+		character = { ...record.character }
+		characters.push(character)
+	}
+
+	if (!characters.includes(character)) {
+		characters.push(character)
+	}
+
+	tokenToCharacter.set(tokenId, character)
+	characterToToken.set(character, tokenId)
+
+	initiativeBonuses.set(character, record.initiativeBonus)
+	statblockFilenames.set(character, record.statblockFilename)
+
+	tokenMetadataSignatures.set(tokenId, JSON.stringify(record))
+
+	if (!groups.includes(character.group)) {
+		groups.push(character.group)
+	}
+
+	return character
+}
+
+function removeLocalCharacter(tokenId: string): boolean {
+	const character = tokenToCharacter.get(tokenId)
+
+	if (!character) return false
+
+	tokenToCharacter.delete(tokenId)
+	characterToToken.delete(character)
+
+	initiativeBonuses.delete(character)
+	statblockFilenames.delete(character)
+
+	initiativeRolls.delete(character)
+	conditions.delete(character)
+
+	const index = characters.indexOf(character)
+
+	if (index !== -1) {
+		characters.splice(index, 1)
+	}
+
+	if (activeCharacter === character) {
+		activeCharacter = null
+	}
+
+	tokenMetadataSignatures.delete(tokenId)
+
+	return true
+}
+
+// -----------------------------------------------------------------------------
+// Reconcile character data with Owlbear's current scene items
+// -----------------------------------------------------------------------------
+
+function syncTrackedCharacters(items: Item[]): boolean {
+	const trackedTokenIds = new Set<string>()
+	let changed = false
+
+	for (const item of items) {
+		if (item.layer !== 'CHARACTER') continue
+
+		const record = getStoredCharacterRecord(item)
+
+		if (!record || !record.tracked) continue
+
+		trackedTokenIds.add(item.id)
+
+		const signature = JSON.stringify(record)
+		const previousSignature = tokenMetadataSignatures.get(item.id)
+
+		if (
+			previousSignature !== signature ||
+			!tokenToCharacter.has(item.id)
+		) {
+			registerStoredCharacter(item.id, record)
+			changed = true
+		}
+	}
+
+	// Remove characters that were deactivated or deleted from the scene.
+	for (const tokenId of [...tokenToCharacter.keys()]) {
+		if (!trackedTokenIds.has(tokenId)) {
+			removeLocalCharacter(tokenId)
+			changed = true
+		}
+	}
+
+	for (const tokenId of [...tokenMetadataSignatures.keys()]) {
+		if (!trackedTokenIds.has(tokenId)) {
+			tokenMetadataSignatures.delete(tokenId)
+		}
+	}
+
+	return changed
+}
+
+// -----------------------------------------------------------------------------
+// Scene state
+// -----------------------------------------------------------------------------
+
+function resetLocalSceneState(): void {
+	characters.splice(0, characters.length)
+
+	initiativeBonuses.clear()
+	tokenToCharacter.clear()
+	characterToToken.clear()
+
+	initiativeRolls.clear()
+	conditions.clear()
+
+	statblockFilenames.clear()
+	tokenMetadataSignatures.clear()
+
+	groups.splice(0, groups.length, 'Ungrouped')
+
+	combatActive = false
+	currentRound = 1
+	activeCharacter = null
+}
+
+function applyStoredSceneState(state: StoredSceneState): void {
+	const restoredGroups = new Set([
+		'Ungrouped',
+		...state.groups
+	])
+
+	// Ensure groups referenced by characters are present too.
+	for (const character of characters) {
+		restoredGroups.add(character.group)
+	}
+
+	groups.splice(0, groups.length, ...restoredGroups)
+
+	combatActive = state.combatActive
+	currentRound = state.currentRound
+
+	initiativeRolls.clear()
+	conditions.clear()
+
+	for (const [tokenId, roll] of Object.entries(state.initiativeRolls)) {
+		const character = tokenToCharacter.get(tokenId)
+
+		if (character) {
+			initiativeRolls.set(character, roll)
+		}
+	}
+
+	for (const [tokenId, condition] of Object.entries(state.conditions)) {
+		const character = tokenToCharacter.get(tokenId)
+
+		if (character) {
+			conditions.set(character, condition)
+		}
+	}
+
+	activeCharacter = state.activeTokenId
+		? tokenToCharacter.get(state.activeTokenId) ?? null
+		: null
+}
+
+function createStoredSceneState(): StoredSceneState {
+	const savedInitiativeRolls: Record<string, number> = {}
+	const savedConditions: Record<string, string> = {}
+
+	for (const [character, roll] of initiativeRolls) {
+		const tokenId = characterToToken.get(character)
+
+		if (tokenId) {
+			savedInitiativeRolls[tokenId] = roll
+		}
+	}
+
+	for (const [character, condition] of conditions) {
+		const tokenId = characterToToken.get(character)
+
+		if (tokenId) {
+			savedConditions[tokenId] = condition
+		}
+	}
+
+	return {
+		version: 1,
+		groups: [...groups],
+		combatActive,
+		currentRound,
+		activeTokenId: activeCharacter
+			? characterToToken.get(activeCharacter) ?? null
+			: null,
+		initiativeRolls: savedInitiativeRolls,
+		conditions: savedConditions
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Persist local changes to Owlbear
+// -----------------------------------------------------------------------------
+
+async function persistCharacter(character: Character): Promise<void> {
+	if (!sceneReady || currentUserRole !== 'GM') return
+
+	const tokenId = characterToToken.get(character)
+
+	if (!tokenId) return
+
+	const record: StoredCharacterRecord = {
+		version: 1,
+		tracked: true,
+		character: { ...character },
+		initiativeBonus: getInitiativeBonus(character),
+		statblockFilename: statblockFilenames.get(character) ?? null
+	}
+
+	await writeCharacterRecord(tokenId, record)
+
+	tokenMetadataSignatures.set(tokenId, JSON.stringify(record))
+}
+
+async function persistSceneState(): Promise<void> {
+	if (!sceneReady || currentUserRole !== 'GM') return
+
+	try {
+		await writeSceneState(createStoredSceneState())
+	} catch (error) {
+		console.error('Failed to persist Turnkeeper scene state:', error)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Scene loading
+// -----------------------------------------------------------------------------
+
+async function initialiseScene(): Promise<void> {
+	if (sceneInitializing) return
+
+	const generation = ++sceneGeneration
+	sceneInitializing = true
+
+	try {
+		if (!(await OBR.scene.isReady())) {
+			sceneReady = false
+			return
+		}
+
+		const [role, items, state] = await Promise.all([
+			OBR.player.getRole(),
+			getCharacterLayerItems(),
+			getStoredSceneState()
+		])
+
+		// Ignore this result if Owlbear has changed scenes while we were loading.
+		if (generation !== sceneGeneration) return
+
+		currentUserRole = role
+
+		resetLocalSceneState()
+
+		syncTrackedCharacters(items)
+		applyStoredSceneState(state)
+
+		sceneReady = true
+
+		render()
+
+		// The overlays are shared scene items. The GM refreshes them when
+		// the scene opens; players simply see the shared versions.
+		if (currentUserRole === 'GM') {
+			await updateAllTokenDrawings()
+		}
+
+	} catch (error) {
+		console.error('Failed to initialise Turnkeeper scene:', error)
+	} finally {
+		if (generation === sceneGeneration) {
+			sceneInitializing = false
+		}
+	}
+}
+
+// Watch for changes from other instances of Turnkeeper
+async function setupTurnkeeperPersistence(): Promise<void> {
+	OBR.scene.items.onChange(items => {
+		if (!sceneReady || sceneInitializing) return
+
+		if (syncTrackedCharacters(items)) {
+			render()
+
+			if (currentUserRole === 'GM') {
+				void persistSceneState()
+				void updateAllTokenDrawings()
+			}
+		}
+	})
+
+	OBR.scene.onMetadataChange(metadata => {
+		if (!sceneReady || sceneInitializing) return
+
+		const state = parseSceneState(
+			metadata['com.rhodso.turnkeeper/scene']
+		)
+
+		applyStoredSceneState(state)
+		render()
+
+		if (currentUserRole === 'GM') {
+			void updateAllTokenDrawings()
+		}
+	})
+
+	OBR.scene.onReadyChange(ready => {
+		if (ready) {
+			void initialiseScene()
+		} else {
+			sceneGeneration++
+			sceneReady = false
+			sceneInitializing = false
+
+			resetLocalSceneState()
+			render()
+		}
+	})
+
+	OBR.player.onChange(player => {
+		currentUserRole = player.role
+		render()
+	})
+
+	// onReadyChange may not fire when the extension first opens in an
+	// already-loaded scene, so explicitly check the current scene too.
+	await initialiseScene()
 }
 
 // Statblock Retrieval Helpers
@@ -214,92 +584,155 @@ interface TokenReference {
 	name: string
 }
 
-async function addTokensToTurnkeeper( tokens: TokenReference[] ): Promise<void> {
-	if (tokens.length === 0) return
+async function addTokensToTurnkeeper(tokens: TokenReference[]): Promise<void> {
+	if (tokens.length === 0 || currentUserRole !== 'GM') return
 
-	let filenames: string[]
+	const sceneItems = await OBR.scene.items.getItems(
+		tokens.map(token => token.id)
+	)
 
-	try { // Retrieve the list once, even when multiple tokens are selected
-		filenames = await getStatblockList()
-	} catch (error) {
-		// On fail
-		console.error('Failed to retrieve statblock list:', error)
-		await OBR.notification.show( 'Unable to retrieve statblocks.', 'ERROR' )
-		return
-	}
+	const itemsById = new Map(sceneItems.map(item => [item.id, item]))
 
-	// If no files
-	if (filenames.length === 0) {
-		await OBR.notification.show( 'No statblocks are available.', 'WARNING' )
-		return
-	}
-
-	let added = 0
+	const pendingTokens: TokenReference[] = []
 	const failures: string[] = []
 	const alreadyAdded: string[] = []
 
+	let added = 0
+
+	// First try to recover saved character data.
 	for (const token of tokens) {
 		const tokenName = token.name.trim()
 
-		if (!tokenName) {
-			failures.push('Unnamed token')
-			continue
-		}
-
-		// Don't add a token that's already registered.
 		if (tokenToCharacter.has(token.id)) {
-			alreadyAdded.push(tokenName)
+			alreadyAdded.push(tokenName || token.id)
 			continue
 		}
 
-		// Find the closest statblock filename.
-		const match = findClosestStatblock(tokenName, filenames)
+		const item = itemsById.get(token.id)
+		const savedRecord = item
+			? getStoredCharacterRecord(item)
+			: null
 
-		if (!match) {
-			failures.push(tokenName)
+		if (savedRecord) {
+			try {
+				// Reactivate without replacing any saved character values.
+				const activatedRecord: StoredCharacterRecord = {
+					...savedRecord,
+					tracked: true
+				}
+
+				await writeCharacterRecord(token.id, activatedRecord)
+
+				const character = registerStoredCharacter(
+					token.id,
+					activatedRecord
+				)
+
+				await updateTokenDrawing(character)
+
+				added++
+			} catch (error) {
+				console.error(`Failed to restore ${tokenName}:`, error)
+				failures.push(tokenName || token.id)
+			}
+
 			continue
 		}
 
-		// Retrieve the actual statblock.
-		const statblock = await getStatblock(match.filename)
+		// No saved metadata: this token needs initial statblock data.
+		pendingTokens.push(token)
+	}
 
-		if (!statblock) {
-			failures.push(tokenName)
-			continue
+	// Only contact the statblock source when we have genuinely new tokens.
+	if (pendingTokens.length > 0) {
+		let filenames: string[] = []
+
+		try {
+			filenames = await getStatblockList()
+		} catch (error) {
+			console.error('Failed to retrieve statblock list:', error)
+
+			failures.push(...pendingTokens.map(token => token.name))
+
+			await OBR.notification.show(
+				'Unable to retrieve statblocks for new tokens.',
+				'ERROR'
+			)
 		}
 
-		// Create the character using the token's name.
-		const character: Character = {
-			name: statblock.name || tokenName,
-			hp: statblock.HP,
-			maxHp: statblock.MxHP,
-			tempHp: statblock.TmpHP,
-			ac: statblock.AC,
-			group: statblock.Group || 'Ungrouped',
-			attachedPlayer: statblock.AttachedPlayer || ''
+		if (filenames.length === 0 && failures.length === 0) {
+			failures.push(...pendingTokens.map(token => token.name))
+
+			await OBR.notification.show(
+				'No statblocks are available.',
+				'WARNING'
+			)
 		}
 
-		// Add the character to the application.
-		characters.push(character)
+		for (const token of pendingTokens) {
+			if (filenames.length === 0) continue
 
-		// Store initiative bonus separately from character data.
-		initiativeBonuses.set( character,  statblock.initiativeBonus ?? 0 )
+			const tokenName = token.name.trim()
 
-		// Remember which Owlbear token this character belongs to.
-		tokenToCharacter.set(token.id, character)
-		characterToToken.set(character, token.id)
+			if (!tokenName) {
+				failures.push('Unnamed token')
+				continue
+			}
 
-		tokenToCharacter.set(token.id, character)
-		characterToToken.set(character, token.id)
+			const match = findClosestStatblock(tokenName, filenames)
 
-		await updateTokenDrawing(character)
+			if (!match) {
+				failures.push(tokenName)
+				continue
+			}
 
-		added++
+			const statblock = await getStatblock(match.filename)
+
+			if (!statblock) {
+				failures.push(tokenName)
+				continue
+			}
+
+			const character: Character = {
+				name: statblock.name || tokenName,
+				hp: statblock.HP,
+				maxHp: statblock.MxHP,
+				tempHp: statblock.TmpHP,
+				ac: statblock.AC,
+				group: statblock.Group || 'Ungrouped',
+				attachedPlayer: statblock.AttachedPlayer || ''
+			}
+
+			const record: StoredCharacterRecord = {
+				version: 1,
+				tracked: true,
+				character,
+				initiativeBonus: statblock.initiativeBonus ?? 0,
+				statblockFilename: match.filename
+			}
+
+			try {
+				// Save to Owlbear before adding it to our local state.
+				await writeCharacterRecord(token.id, record)
+
+				const registeredCharacter = registerStoredCharacter(
+					token.id,
+					record
+				)
+
+				await updateTokenDrawing(registeredCharacter)
+
+				added++
+			} catch (error) {
+				console.error(`Failed to save ${tokenName}:`, error)
+				failures.push(tokenName)
+			}
+		}
 	}
 
 	render()
+	await persistSceneState()
 
-	// Report the results
 	if (added > 0) {
 		await OBR.notification.show(
 			`Added ${added} character${added === 1 ? '' : 's'} to Turnkeeper.`,
@@ -310,10 +743,10 @@ async function addTokensToTurnkeeper( tokens: TokenReference[] ): Promise<void> 
 	}
 
 	if (failures.length > 0) {
-		console.warn('No matching statblock found for:', failures)
+		console.warn('Could not add:', failures)
 
 		await OBR.notification.show(
-			`No matching statblock found for: ${failures.join(', ')}`,
+			`Could not add: ${failures.join(', ')}`,
 			'WARNING'
 		)
 	}
@@ -509,6 +942,8 @@ function startCombat(): void {
 	combatActive = true
 	currentRound = 1
 	activeCharacter = getInitiativeOrder()[0] ?? null
+	void persistSceneState()
+	void updateAllTokenDrawings()
 }
 
 // When combat stops
@@ -517,7 +952,8 @@ function stopCombat(): void {
 	currentRound = 1
 	activeCharacter = null
 	initiativeRolls.clear()
-  	conditions.clear()
+	conditions.clear()
+	void persistSceneState()
 	void updateAllTokenDrawings()
 }
 
@@ -533,6 +969,10 @@ function changeTurn(direction: number): void {
 
 	if (index === -1) {
 		activeCharacter = order[0]
+
+		void persistSceneState()
+		void updateAllTokenDrawings()
+
 		return
 	}
 
@@ -547,6 +987,7 @@ function changeTurn(direction: number): void {
 	} else {
 		activeCharacter = order[nextIndex]
 	}
+	void persistSceneState()
 
 	// Redraw token overlays
 	void updateAllTokenDrawings()
@@ -635,6 +1076,7 @@ function addGroup(): void {
 	}
 
 	groups.push(group)
+	void persistSceneState()
 }
 
 function renameGroup(oldGroup: string): void {
@@ -672,10 +1114,17 @@ function renameGroup(oldGroup: string): void {
 			character.group = newGroup
 		}
 	}
+
+	void Promise.all(
+		characters
+			.filter(character => character.group === newGroup)
+			.map(character => persistCharacter(character))
+	)
+
+	void persistSceneState()
 }
 
-function deleteGroup(group: string): void {
-	// Ungrouped is a permanent system group
+async function deleteGroup(group: string): Promise<void> {
 	if (group === 'Ungrouped' || combatActive) return
 
 	const members = characters.filter(
@@ -683,47 +1132,25 @@ function deleteGroup(group: string): void {
 	)
 
 	const confirmed = window.confirm(
-		`Delete "${getGroupLabel(group)}" and all ${members.length} character(s) inside it?`
+		`Delete "${getGroupLabel(group)}" and deactivate its ${members.length} character(s)?`
 	)
 
 	if (!confirmed) return
 
-	// Remove characters and their temporary encounter data
-	for (let i = characters.length - 1; i >= 0; i--) {
-		const character = characters[i]
+	const tokenIds = members
+		.map(character => characterToToken.get(character))
+		.filter((id): id is string => Boolean(id))
 
-		if (character.group !== group) continue
+	await removeTokensFromTurnkeeper(tokenIds)
 
-		initiativeRolls.delete(character)
-		conditions.delete(character)
-
-		if (activeCharacter === character) {
-			activeCharacter = null
-		}
-
-		const tokenId = characterToToken.get(character)
-
-		if (tokenId) {
-			tokenToCharacter.delete(tokenId)
-		}
-
-		characterToToken.delete(character)
-
-		if (tokenId) {
-			void clearTokenDrawing(tokenId)
-		}
-
-		characters.splice(i, 1)
-	}
-
-	// Remove the group definition
 	const index = groups.indexOf(group)
 
 	if (index !== -1) {
 		groups.splice(index, 1)
 	}
 
-	void updateAllTokenDrawings()
+	await persistSceneState()
+	render()
 }
 
 
@@ -934,46 +1361,25 @@ async function updateTokenDrawing(character: Character): Promise<void> {
 }
 
 async function removeTokensFromTurnkeeper(tokenIds: string[]): Promise<void> {
-	const tokensToClear: string[] = []
-	let activeCharacterRemoved = false
+	if (currentUserRole !== 'GM') return
 
 	for (const tokenId of tokenIds) {
-		const character = tokenToCharacter.get(tokenId)
+		// Change only the tracking flag. All character attributes remain saved.
+		const updated = await setCharacterTracked(tokenId, false)
 
-		// Ignore tokens that aren't currently tracked.
-		if (!character) continue
-
-		tokensToClear.push(tokenId)
-
-		// Remove the character from our tracking maps.
-		tokenToCharacter.delete(tokenId)
-		characterToToken.delete(character)
-
-		// Remove encounter-specific data.
-		initiativeRolls.delete(character)
-		initiativeBonuses.delete(character)
-		conditions.delete(character)
-
-		// Remove the character from the main character list.
-		const index = characters.indexOf(character)
-		if (index !== -1) {
-			characters.splice(index, 1)
+		if (!updated) {
+			console.warn(`Could not deactivate Turnkeeper data for ${tokenId}.`)
 		}
 
-		// Clear the active turn if this character had it.
-		if (activeCharacter === character) {
-			activeCharacter = null
-			activeCharacterRemoved = true
-		}
+		// Remove the local representation and encounter-only information.
+		removeLocalCharacter(tokenId)
+
+		// Remove the visible overlays, but not the underlying Owlbear token.
+		await clearTokenDrawing(tokenId)
 	}
 
-	// Remove all Turnkeeper drawings from the affected tokens.
-	await Promise.all(tokensToClear.map(tokenId => clearTokenDrawing(tokenId)))
-
-	// Refresh the remaining drawings if the active character was removed.
-	if (activeCharacterRemoved) {
-		await Promise.all(characters.map(character => updateTokenDrawing(character)))
-	}
+	await persistSceneState()
+	await updateAllTokenDrawings()
 
 	render()
 }
@@ -1163,7 +1569,13 @@ function render(): void {
 
 			<footer class="app-footer">
 				<span>Turnkeeper</span>
-				<span>Sample data · Not connected to Owlbear</span>
+				<span>
+					${currentUserRole === 'GM'
+						? 'GM VIEW · Scene synchronised'
+						: currentUserRole === 'PLAYER'
+							? 'PLAYER VIEW · Scene synchronised'
+							: 'CONNECTING TO OWLBEAR'}
+				</span>
 			</footer>
 		</div>
 	`
@@ -1178,6 +1590,8 @@ function render(): void {
 
 // Editing character and encounter data
 app.addEventListener('change', event => {
+	if (currentUserRole !== 'GM') return
+
 	const target = event.target
 
 	if (!(target instanceof HTMLInputElement)) return
@@ -1237,6 +1651,14 @@ app.addEventListener('change', event => {
 		}
 	}
 
+	// Initiative and conditions belong to the current encounter.
+	if (field === 'initiative' || field === 'condition') {
+		void persistSceneState()
+	} else {
+		// Character attributes are persistent.
+		void persistCharacter(character)
+	}
+
 	render()
 	void updateTokenDrawing(character)
 })
@@ -1277,6 +1699,7 @@ app.addEventListener('click', event => {
 			if (character) {
 				rollCharacter(character)
 			}
+			void persistSceneState()
 			break
 		}
 
@@ -1288,6 +1711,7 @@ app.addEventListener('click', event => {
 					rollCharacter(character)
 				}
 			}
+			void persistSceneState()
 			break
 		}
 
@@ -1307,7 +1731,7 @@ app.addEventListener('click', event => {
 			if (combatActive) break
 
 			const group = decodeURIComponent(button.dataset.group ?? '')
-			deleteGroup(group)
+			void deleteGroup(group)
 			break
 		}
 	}
@@ -1404,8 +1828,10 @@ app.addEventListener('drop', event => {
 
 	// Move the character to the destination group
 	draggedCharacter.group = destinationGroup
-
+	void persistCharacter(draggedCharacter)
+	void persistSceneState()
 	draggedCharacter = null
+
 
 	render()
 })
@@ -1435,7 +1861,7 @@ app.addEventListener('dragend', () => {
 // No statblock ID needs to be stored on the token.
 
 // Context menus for Turnkeeper
-const EXTENSION_ID = 'com.rhodso.turnkeeper'
+const EXTENSION_ID = TURNKEEPER_EXTENSION_ID
 
 async function setupTurnkeeperContextMenu(): Promise<void> {
 	// Add to Turnkeeper
@@ -1553,11 +1979,20 @@ if (OBR.isAvailable) {
 			)
 		})
 
+		void setupTurnkeeperPersistence().catch(error => {
+			console.error('Failed to initialise Turnkeeper persistence:', error)
+
+			void OBR.notification.show(
+				'Failed to initialise Turnkeeper persistence.',
+				'ERROR'
+			)
+		})
+
 		void setupRoomRoleTracking().catch(error => {
 			console.error('Failed to initialise room role tracking:', error)
 
 			void OBR.notification.show(
-				'Failed to load room players and roles.',
+				'Failed to initialise room role tracking.',
 				'ERROR'
 			)
 		})
