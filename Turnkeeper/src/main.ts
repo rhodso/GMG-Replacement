@@ -112,6 +112,10 @@ const statblockFilenames = new Map<Character, string | null>()
 // Track the metadata versions we've already loaded, avoiding unnecessary redraws.
 const tokenMetadataSignatures = new Map<string, string>()
 
+// Pending character metadata writes, serialised separately for each token.
+const pendingCharacterWrites = new Map<string, Promise<void>>()
+let lastSceneStateSignature = ''
+
 // Owlbear room and scene state.
 let sceneReady = false
 let sceneInitializing = false
@@ -218,6 +222,10 @@ function syncTrackedCharacters(items: Item[]): boolean {
 
 		trackedTokenIds.add(item.id)
 
+		// Ignore metadata notifications for tokens with writes in progress
+		// Their local character state is already up to date
+		if (pendingCharacterWrites.has(item.id)) continue
+
 		const signature = JSON.stringify(record)
 		const previousSignature = tokenMetadataSignatures.get(item.id)
 
@@ -269,6 +277,8 @@ function resetLocalSceneState(): void {
 	combatActive = false
 	currentRound = 1
 	activeCharacter = null
+
+	lastSceneStateSignature = ''
 }
 
 function applyStoredSceneState(state: StoredSceneState): void {
@@ -344,10 +354,28 @@ function createStoredSceneState(): StoredSceneState {
 	}
 }
 
-// -----------------------------------------------------------------------------
-// Persist local changes to Owlbear
-// -----------------------------------------------------------------------------
+function getTokenDrawingStateSignature(): string {
+	const conditionEntries: [string, string][] = []
 
+	for (const [character, condition] of conditions) {
+		const tokenId = characterToToken.get(character)
+
+		if (tokenId) {
+			conditionEntries.push([tokenId, condition])
+		}
+	}
+
+	conditionEntries.sort(([a], [b]) => a.localeCompare(b))
+
+	return JSON.stringify({
+		activeTokenId: activeCharacter
+			? characterToToken.get(activeCharacter) ?? null
+			: null,
+		conditions: conditionEntries
+	})
+}
+
+// Persist local changes to Owlbear
 async function persistCharacter(character: Character): Promise<void> {
 	if (!sceneReady || currentUserRole !== 'GM') return
 
@@ -355,26 +383,86 @@ async function persistCharacter(character: Character): Promise<void> {
 
 	if (!tokenId) return
 
-	const record: StoredCharacterRecord = {
-		version: 1,
-		tracked: true,
-		character: { ...character },
-		initiativeBonus: getInitiativeBonus(character),
-		statblockFilename: statblockFilenames.get(character) ?? null
+	// Queue this write behind any existing write for this token.
+	const previousWrite = pendingCharacterWrites.get(tokenId) ?? Promise.resolve()
+
+	const currentWrite = previousWrite
+		.catch(() => undefined)
+		.then(async () => {
+			// Check that the character is still tracked and the scene is ready.
+			if (!sceneReady || currentUserRole !== 'GM') return
+			if (tokenToCharacter.get(tokenId) !== character) return
+
+			// Build the record when the write executes, not when it is queued.
+			// This ensures we always save the most recent character values.
+			const record: StoredCharacterRecord = {
+				version: 1,
+				tracked: true,
+				character: { ...character },
+				initiativeBonus: getInitiativeBonus(character),
+				statblockFilename: statblockFilenames.get(character) ?? null
+			}
+
+			const signature = JSON.stringify(record)
+
+			// Skip this write if the latest values are already saved.
+			if (tokenMetadataSignatures.get(tokenId) === signature) return
+
+			// Register the pending signature before writing.
+			// This prevents our own Owlbear change notification from
+			// unnecessarily overwriting the local character state.
+			const previousSignature = tokenMetadataSignatures.get(tokenId)
+			tokenMetadataSignatures.set(tokenId, signature)
+
+			try {
+				await writeCharacterRecord(tokenId, record)
+			} catch (error) {
+				// Restore the previous signature if the write failed.
+				if (tokenMetadataSignatures.get(tokenId) === signature) {
+					if (previousSignature === undefined) {
+						tokenMetadataSignatures.delete(tokenId)
+					} else {
+						tokenMetadataSignatures.set(tokenId, previousSignature)
+					}
+				}
+
+				throw error
+			}
+		})
+
+	pendingCharacterWrites.set(tokenId, currentWrite)
+
+	try {
+		await currentWrite
+	} catch (error) {
+		console.error(`Failed to save character ${character.name}:`, error)
+	} finally {
+		// Only remove the queue if this is still its latest operation.
+		if (pendingCharacterWrites.get(tokenId) === currentWrite) {
+			pendingCharacterWrites.delete(tokenId)
+		}
 	}
-
-	await writeCharacterRecord(tokenId, record)
-
-	tokenMetadataSignatures.set(tokenId, JSON.stringify(record))
 }
 
 async function persistSceneState(): Promise<void> {
 	if (!sceneReady || currentUserRole !== 'GM') return
 
+	const state = createStoredSceneState()
+	const signature = JSON.stringify(state)
+
+	if (signature === lastSceneStateSignature) return
+
+	// Update before writing so our own metadata notification is recognised.
+	lastSceneStateSignature = signature
+
 	try {
-		await writeSceneState(createStoredSceneState())
+		await writeSceneState(state)
 	} catch (error) {
 		console.error('Failed to persist Turnkeeper scene state:', error)
+
+		if (lastSceneStateSignature === signature) {
+			lastSceneStateSignature = ''
+		}
 	}
 }
 
@@ -404,6 +492,7 @@ async function initialiseScene(): Promise<void> {
 		if (generation !== sceneGeneration) return
 
 		currentUserRole = role
+		lastSceneStateSignature = JSON.stringify(state)
 
 		resetLocalSceneState()
 
@@ -438,7 +527,6 @@ async function setupTurnkeeperPersistence(): Promise<void> {
 			render()
 
 			if (currentUserRole === 'GM') {
-				void persistSceneState()
 				void updateAllTokenDrawings()
 			}
 		}
@@ -451,10 +539,25 @@ async function setupTurnkeeperPersistence(): Promise<void> {
 			metadata['com.rhodso.turnkeeper/scene']
 		)
 
+		const signature = JSON.stringify(state)
+
+		// Ignore identical metadata, including our own writes.
+		if (signature === lastSceneStateSignature) return
+
+		const previousDrawingState = getTokenDrawingStateSignature()
+
+		lastSceneStateSignature = signature
+
 		applyStoredSceneState(state)
 		render()
 
-		if (currentUserRole === 'GM') {
+		const newDrawingState = getTokenDrawingStateSignature()
+
+		// Only redraw when conditions or the active turn actually changed.
+		if (
+			currentUserRole === 'GM' &&
+			previousDrawingState !== newDrawingState
+		) {
 			void updateAllTokenDrawings()
 		}
 	})
@@ -621,12 +724,14 @@ async function addTokensToTurnkeeper(tokens: TokenReference[]): Promise<void> {
 					tracked: true
 				}
 
-				await writeCharacterRecord(token.id, activatedRecord)
-
 				const character = registerStoredCharacter(
 					token.id,
 					activatedRecord
 				)
+
+				if (!savedRecord.tracked) {
+					await writeCharacterRecord(token.id, activatedRecord)
+				}
 
 				await updateTokenDrawing(character)
 
@@ -712,26 +817,30 @@ async function addTokensToTurnkeeper(tokens: TokenReference[]): Promise<void> {
 			}
 
 			try {
-				// Save to Owlbear before adding it to our local state.
-				await writeCharacterRecord(token.id, record)
-
+				// Register locally first so our own metadata notification
+				// doesn't cause a second registration and redraw.
 				const registeredCharacter = registerStoredCharacter(
 					token.id,
 					record
 				)
 
+				await writeCharacterRecord(token.id, record)
 				await updateTokenDrawing(registeredCharacter)
 
 				added++
 			} catch (error) {
 				console.error(`Failed to save ${tokenName}:`, error)
 				failures.push(tokenName)
+				removeLocalCharacter(token.id)
 			}
 		}
 	}
-
 	render()
-	await persistSceneState()
+
+	// Only save scene state when something was actually added or restored.
+	if (added > 0) {
+		await persistSceneState()
+	}
 
 	if (added > 0) {
 		await OBR.notification.show(
@@ -1446,6 +1555,16 @@ async function updateAllTokenDrawings(): Promise<void> {
 	)
 }
 
+function refreshTurnkeeperUI(): void {
+	// Rebuild the sidebar from current in-memory data.
+	render()
+
+	// Only the GM should redraw shared scene overlays.
+	if (currentUserRole === 'GM') {
+		void updateAllTokenDrawings()
+	}
+}
+
 // Main render function
 function render(): void {
 	// Preserve sidebar scroll position across renders
@@ -1464,9 +1583,13 @@ function render(): void {
 		return `${name}: ${member.role}`
 	}).join('\n')
 
-	const roleSummary = currentUserRole
-		? `${currentUserRole === 'GM' ? 'GM VIEW' : 'PLAYER VIEW'} · ${gmMembers.length} GM · ${playerMembers.length} PLAYER`
-		: 'CONNECTING TO OWLBEAR'
+	const roleTitle = currentUserRole === 'GM'
+		? 'GM View'
+		: currentUserRole === 'PLAYER'
+			? 'Player View'
+			: 'Connecting'
+
+	const roleCounts = `${gmMembers.length} GM · ${playerMembers.length} P`
 
 	const content = combatActive
 		? `
@@ -1508,9 +1631,19 @@ function render(): void {
 						<span>Encounter Manager</span>
 					</div>
 				</div>
-				<span class="preview-label" title="${escapeHtml(roleTooltip)}">
-					${roleSummary}
-				</span>
+				<div class="header-status">
+				<div class="preview-label" title="${escapeHtml(roleTooltip)}">
+					<strong>${roleTitle}</strong>
+					<span>${roleCounts}</span>
+				</div>
+
+				<button
+					class="header-refresh-button"
+					data-action="refresh-ui"
+					title="Refresh display"
+					aria-label="Refresh display"
+				>↻</button>
+			</div>
 			</header>
 
 			<section class="round-header">
@@ -1677,6 +1810,9 @@ app.addEventListener('click', event => {
 	const action = button.dataset.action
 
 	switch (action) {
+		case 'refresh-ui':
+			refreshTurnkeeperUI()
+		return
 		case 'toggle-combat':
 			if (combatActive) {
 				stopCombat()

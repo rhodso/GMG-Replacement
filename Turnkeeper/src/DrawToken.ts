@@ -13,6 +13,28 @@ type ShapeType = 'RECTANGLE' | 'CIRCLE' | 'TRIANGLE' | 'HEXAGON'
 
 const PREFIX = 'Turnkeeper/'
 
+// Serialise drawing operations per token to prevent overlapping deletes/adds.
+const tokenOperationQueues = new Map<string, Promise<void>>()
+
+function enqueueTokenOperation(
+	tokenId: string,
+	operation: () => Promise<void>
+): Promise<void> {
+	const previous = tokenOperationQueues.get(tokenId) ?? Promise.resolve()
+
+	const current = previous
+		.catch(() => undefined)
+		.then(operation)
+
+	tokenOperationQueues.set(tokenId, current)
+
+	return current.finally(() => {
+		if (tokenOperationQueues.get(tokenId) === current) {
+			tokenOperationQueues.delete(tokenId)
+		}
+	})
+}
+
 const COLOURS = {
 	healthy: '#55bd78',
 	wounded: '#e6a23c',
@@ -169,7 +191,7 @@ function createText(
 		.build()
 }
 
-export async function drawToken(
+async function drawTokenNow(
 	tokenId: string,
 	data: TokenDisplayData
 ): Promise<void> {
@@ -480,7 +502,7 @@ export async function drawToken(
 }
 
 // Clear drawing
-export async function clearTokenDrawing(tokenId: string): Promise<void> {
+async function clearTokenDrawingNow(tokenId: string): Promise<void> {
 	const attachments = await OBR.scene.items.getItemAttachments([tokenId])
 
 	const oldItems = attachments.filter(item =>
@@ -490,4 +512,22 @@ export async function clearTokenDrawing(tokenId: string): Promise<void> {
 	if (oldItems.length > 0) {
 		await OBR.scene.items.deleteItems(oldItems.map(item => item.id))
 	}
+}
+
+// Public drawing functions. All operations for a given token are queued.
+export function drawToken(
+	tokenId: string,
+	data: TokenDisplayData
+): Promise<void> {
+	return enqueueTokenOperation(
+		tokenId,
+		() => drawTokenNow(tokenId, data)
+	)
+}
+
+export function clearTokenDrawing(tokenId: string): Promise<void> {
+	return enqueueTokenOperation(
+		tokenId,
+		() => clearTokenDrawingNow(tokenId)
+	)
 }

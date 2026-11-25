@@ -42,6 +42,9 @@ const DEFAULT_SCENE_STATE: StoredSceneState = {
 	conditions: {}
 }
 
+// Serialise all character metadata writes per token.
+const characterRecordWriteQueues = new Map<string, Promise<void>>()
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -107,29 +110,47 @@ export async function getSceneItem(tokenId: string): Promise<Item | null> {
 	return items[0] ?? null
 }
 
-export async function writeCharacterRecord(
+export function writeCharacterRecord(
 	tokenId: string,
 	record: StoredCharacterRecord
 ): Promise<void> {
-	let updated = false
+	const previousWrite =
+		characterRecordWriteQueues.get(tokenId) ?? Promise.resolve()
 
-	await OBR.scene.items.updateItems(
-		item => item.id === tokenId,
-		draftItems => {
-			const item = draftItems[0]
-			if (!item) return
+	const currentWrite = previousWrite
+		.catch(() => undefined)
+		.then(async () => {
+			let updated = false
 
-			item.metadata = {
-				...item.metadata,
-				[TURNKEEPER_CHARACTER_METADATA_KEY]: record
+			await OBR.scene.items.updateItems(
+				item => item.id === tokenId,
+				draftItems => {
+					const item = draftItems[0]
+					if (!item) return
+
+					item.metadata = {
+						...item.metadata,
+						[TURNKEEPER_CHARACTER_METADATA_KEY]: record
+					}
+
+					updated = true
+				}
+			)
+
+			if (!updated) {
+				throw new Error(
+					`Could not find Owlbear token ${tokenId} to save Turnkeeper metadata.`
+				)
 			}
-			updated = true
-		}
-	)
+		})
 
-	if (!updated) {
-		throw new Error(`Could not find Owlbear token ${tokenId} to save Turnkeeper metadata.`)
-	}
+	characterRecordWriteQueues.set(tokenId, currentWrite)
+
+	return currentWrite.finally(() => {
+		if (characterRecordWriteQueues.get(tokenId) === currentWrite) {
+			characterRecordWriteQueues.delete(tokenId)
+		}
+	})
 }
 
 export async function setCharacterTracked(
