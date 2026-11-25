@@ -116,6 +116,10 @@ const tokenMetadataSignatures = new Map<string, string>()
 const pendingCharacterWrites = new Map<string, Promise<void>>()
 let lastSceneStateSignature = ''
 
+// Owlbear token ownership
+const tokenOwnerIds = new Map<string, string>()
+let currentUserId = ''
+
 // Owlbear room and scene state.
 let sceneReady = false
 let sceneInitializing = false
@@ -189,6 +193,7 @@ function removeLocalCharacter(tokenId: string): boolean {
 
 	initiativeRolls.delete(character)
 	conditions.delete(character)
+	tokenOwnerIds.delete(tokenId)
 
 	const index = characters.indexOf(character)
 
@@ -217,13 +222,20 @@ function syncTrackedCharacters(items: Item[]): boolean {
 		if (item.layer !== 'CHARACTER') continue
 
 		const record = getStoredCharacterRecord(item)
-
 		if (!record || !record.tracked) continue
 
 		trackedTokenIds.add(item.id)
 
-		// Ignore metadata notifications for tokens with writes in progress
-		// Their local character state is already up to date
+		// Track Owlbear's native token owner.
+		const ownerId = item.createdUserId ?? ''
+		const previousOwnerId = tokenOwnerIds.get(item.id)
+
+		if (previousOwnerId !== ownerId) {
+			tokenOwnerIds.set(item.id, ownerId)
+			changed = true
+		}
+
+		// Ignore metadata notifications for tokens with writes in progress.
 		if (pendingCharacterWrites.has(item.id)) continue
 
 		const signature = JSON.stringify(record)
@@ -238,7 +250,7 @@ function syncTrackedCharacters(items: Item[]): boolean {
 		}
 	}
 
-	// Remove characters that were deactivated or deleted from the scene.
+	// Remove characters that were deactivated or deleted.
 	for (const tokenId of [...tokenToCharacter.keys()]) {
 		if (!trackedTokenIds.has(tokenId)) {
 			removeLocalCharacter(tokenId)
@@ -249,6 +261,13 @@ function syncTrackedCharacters(items: Item[]): boolean {
 	for (const tokenId of [...tokenMetadataSignatures.keys()]) {
 		if (!trackedTokenIds.has(tokenId)) {
 			tokenMetadataSignatures.delete(tokenId)
+		}
+	}
+
+	for (const tokenId of [...tokenOwnerIds.keys()]) {
+		if (!trackedTokenIds.has(tokenId)) {
+			tokenOwnerIds.delete(tokenId)
+			changed = true
 		}
 	}
 
@@ -271,6 +290,7 @@ function resetLocalSceneState(): void {
 
 	statblockFilenames.clear()
 	tokenMetadataSignatures.clear()
+	tokenOwnerIds.clear()
 
 	groups.splice(0, groups.length, 'Ungrouped')
 
@@ -377,7 +397,7 @@ function getTokenDrawingStateSignature(): string {
 
 // Persist local changes to Owlbear
 async function persistCharacter(character: Character): Promise<void> {
-	if (!sceneReady || currentUserRole !== 'GM') return
+	if (!sceneReady || !canEditCharacter(character)) return
 
 	const tokenId = characterToToken.get(character)
 
@@ -390,7 +410,7 @@ async function persistCharacter(character: Character): Promise<void> {
 		.catch(() => undefined)
 		.then(async () => {
 			// Check that the character is still tracked and the scene is ready.
-			if (!sceneReady || currentUserRole !== 'GM') return
+			if (!sceneReady || !canEditCharacter(character)) return
 			if (tokenToCharacter.get(tokenId) !== character) return
 
 			// Build the record when the write executes, not when it is queued.
@@ -463,6 +483,53 @@ async function persistSceneState(): Promise<void> {
 		if (lastSceneStateSignature === signature) {
 			lastSceneStateSignature = ''
 		}
+	}
+}
+
+async function persistOwnedEncounterState(
+	character: Character
+): Promise<void> {
+	if (!sceneReady || !canEditCharacter(character)) return
+
+	const tokenId = characterToToken.get(character)
+	if (!tokenId) return
+
+	try {
+		// Read the latest scene state so we don't overwrite other
+		// players' initiative or conditions with stale local data.
+		const state = await getStoredSceneState()
+
+		const nextState: StoredSceneState = {
+			...state,
+			initiativeRolls: { ...state.initiativeRolls },
+			conditions: { ...state.conditions }
+		}
+
+		const initiative = initiativeRolls.get(character)
+		const condition = conditions.get(character)
+
+		if (initiative === undefined) {
+			delete nextState.initiativeRolls[tokenId]
+		} else {
+			nextState.initiativeRolls[tokenId] = initiative
+		}
+
+		if (!condition) {
+			delete nextState.conditions[tokenId]
+		} else {
+			nextState.conditions[tokenId] = condition
+		}
+
+		const signature = JSON.stringify(nextState)
+		lastSceneStateSignature = signature
+
+		await writeSceneState(nextState)
+	} catch (error) {
+		console.error(
+			`Failed to save encounter data for ${character.name}:`,
+			error
+		)
+		lastSceneStateSignature = ''
 	}
 }
 
@@ -895,6 +962,50 @@ function getGroupCategory(group: string): GroupCategory {
 	return 'U'
 }
 
+function getTokenOwnerId(character: Character): string | null {
+	const tokenId = characterToToken.get(character)
+	if (!tokenId) return null
+
+	return tokenOwnerIds.get(tokenId) || null
+}
+
+function isCharacterOwner(character: Character): boolean {
+	const ownerId = getTokenOwnerId(character)
+
+	return Boolean(
+		currentUserId &&
+		ownerId &&
+		ownerId === currentUserId
+	)
+}
+
+function canEditCharacter(character: Character): boolean {
+	if (currentUserRole === 'GM') return true
+
+	return isCharacterOwner(character)
+}
+
+function canViewCharacter(character: Character): boolean {
+	if (currentUserRole === 'GM') return true
+	if (currentUserRole !== 'PLAYER') return false
+	if (isCharacterOwner(character)) return true
+
+	const category = getGroupCategory(character.group)
+
+	// Players can see friendly characters they don't own,
+	// but cannot see unowned enemies or unclassified characters.
+	return category === 'P' || category === 'A'
+}
+
+function getCharacterOwnerLabel(character: Character): string {
+	const ownerId = getTokenOwnerId(character)
+
+	if (!ownerId) return 'Unassigned'
+	if (ownerId === currentUserId) return 'You'
+
+	return 'Another player'
+}
+
 // Order categories
 function getCategoryOrder(group: string): number {
 	const order: Record<GroupCategory, number> = {
@@ -1144,6 +1255,47 @@ function getGroupedCharacters(): Map<string, Character[]> {
 	)
 }
 
+function getDisplayGroups(): Map<string, Character[]> {
+	const allGroups = getGroupedCharacters()
+
+	if (currentUserRole !== 'PLAYER') {
+		return allGroups
+	}
+
+	const displayGroups = new Map<string, Character[]>()
+	const enemies: Character[] = []
+
+	for (const [group, members] of allGroups) {
+		const category = getGroupCategory(group)
+
+		if (category === 'E' || category === 'U') {
+			enemies.push(...members)
+		} else if (members.length > 0) {
+			displayGroups.set(group, members)
+		}
+	}
+
+	// Combine all enemy groups into one anonymous group.
+	if (enemies.length > 0) {
+		displayGroups.set('E_Enemies', enemies)
+	}
+
+	return new Map(
+		[...displayGroups.entries()].sort((a, b) => {
+			const categoryDifference =
+				getCategoryOrder(a[0]) - getCategoryOrder(b[0])
+
+			if (categoryDifference !== 0) return categoryDifference
+
+			return getGroupLabel(a[0]).localeCompare(
+				getGroupLabel(b[0]),
+				undefined,
+				{ sensitivity: 'base' }
+			)
+		})
+	)
+}
+
 
 function validateGroupName(input: string): string | null {
 	const name = input.trim()
@@ -1270,13 +1422,21 @@ function renderCharacterCard(character: Character): string {
 	const index = characters.indexOf(character)
 	const isActive = character === activeCharacter
 
-	// Calculate normal and temporary HP
+	const canEdit = canEditCharacter(character)
+	const category = getGroupCategory(character.group)
+
+	// Unowned enemies get a more restrictive, anonymous card.
+	const restrictedEnemy =
+		currentUserRole === 'PLAYER' &&
+		!canEdit &&
+		(category === 'E' || category === 'U')
+
+	// Calculate HP bar proportions.
 	const hp = Math.max(0, character.hp)
 	const tempHp = Math.max(0, character.tempHp)
 	const maxHp = Math.max(0, character.maxHp)
 	const totalHp = hp + tempHp
 
-	// Determine health colour using normal HP only
 	const hpPercent = maxHp > 0
 		? Math.min(100, (hp / maxHp) * 100)
 		: 0
@@ -1285,7 +1445,6 @@ function renderCharacterCard(character: Character): string {
 		hpPercent > 50 ? 'healthy' :
 		hpPercent > 10 ? 'wounded' : 'critical'
 
-	// Calculate combined HP bar width
 	const totalBarPercent = maxHp > 0
 		? Math.min(100, (totalHp / maxHp) * 100)
 		: 0
@@ -1301,6 +1460,77 @@ function renderCharacterCard(character: Character): string {
 	const initiative = initiativeRolls.get(character)
 	const initiativeBonus = getInitiativeBonus(character)
 	const condition = conditions.get(character) ?? ''
+
+	// Shared HP bar markup.
+	const hpBar = `
+		<div class="hp-track">
+			<div
+				class="hp-fill ${hpColour}"
+				style="width: ${hpBarPercent}%"
+			></div>
+			<div
+				class="hp-fill hp-temporary"
+				style="width: ${tempBarPercent}%"
+			></div>
+		</div>
+	`
+
+	// Conditions are only displayed when one exists.
+	const conditionDisplay = condition
+		? `
+			<div class="readonly-condition">
+				<span>STATUS</span>
+				<strong>${escapeHtml(condition)}</strong>
+			</div>
+		`
+		: ''
+
+	// -------------------------------------------------------------------------
+	// ENEMY: anonymous, read-only card
+	// -------------------------------------------------------------------------
+
+	if (restrictedEnemy) {
+		return `
+			<article class="character-card readonly-card enemy-redacted-card ${isActive ? 'active' : ''}">
+				<div class="enemy-redacted-info">
+					${hpBar}
+					${conditionDisplay}
+				</div>
+			</article>
+		`
+	}
+
+	// -------------------------------------------------------------------------
+	// FRIENDLY / ALLY: compact, read-only card
+	// -------------------------------------------------------------------------
+
+	if (!canEdit) {
+		return `
+			<article class="character-card readonly-card ${isActive ? 'active' : ''}">
+				<div class="character-avatar readonly-avatar">
+					${escapeHtml(character.name.charAt(0).toUpperCase() || '?')}
+				</div>
+
+				<div class="readonly-character-info">
+					<div class="readonly-card-heading">
+						<h3>${escapeHtml(character.name)}</h3>
+					</div>
+
+					${hpBar}
+					${conditionDisplay}
+				</div>
+
+				<div class="initiative-result readonly-initiative">
+					<span>INIT</span>
+					<strong>${initiative ?? '—'}</strong>
+				</div>
+			</article>
+		`
+	}
+
+	// -------------------------------------------------------------------------
+	// GM / OWNER: full editable card
+	// -------------------------------------------------------------------------
 
 	return `
 		<article class="character-card ${isActive ? 'active' : ''}">
@@ -1382,16 +1612,7 @@ function renderCharacterCard(character: Character): string {
 					</label>
 				</div>
 
-				<div class="hp-track">
-					<div
-						class="hp-fill ${hpColour}"
-						style="width: ${hpBarPercent}%"
-					></div>
-					<div
-						class="hp-fill hp-temporary"
-						style="width: ${tempBarPercent}%"
-					></div>
-				</div>
+				${hpBar}
 
 				<div class="condition-row">
 					<label for="condition-${index}">STATUS</label>
@@ -1494,7 +1715,11 @@ async function removeTokensFromTurnkeeper(tokenIds: string[]): Promise<void> {
 }
 
 // Render the groups
-function renderGroup(group: string, members: Character[]): string {
+function renderGroup(
+	group: string,
+	members: Character[],
+	redacted = false
+): string {
 	const isSystemGroup = group === 'Ungrouped'
 	const encodedGroup = encodeURIComponent(group)
 
@@ -1505,15 +1730,19 @@ function renderGroup(group: string, members: Character[]): string {
 		>
 			<div class="group-heading">
 				<div class="group-title">
-					<span class="group-category ${getGroupCategory(group).toLowerCase()}">
-						${getGroupCategory(group)}
-					</span>
+					${!redacted ? `
+						<span class="group-category ${getGroupCategory(group).toLowerCase()}">
+							${getGroupCategory(group)}
+						</span>
+					` : ''}
 
-					<h2>${escapeHtml(getGroupLabel(group))}</h2>
-					<span class="group-count">${members.length}</span>
+					<h2>${redacted ? 'Enemies' : escapeHtml(getGroupLabel(group))}</h2>
+
+					${!redacted ? `<span class="group-count">${members.length}</span>` : ''}
 				</div>
 
 				<div class="group-actions">
+					${!redacted ? `
 					${!isSystemGroup ? `
 						<button
 							class="group-action-button"
@@ -1531,6 +1760,7 @@ function renderGroup(group: string, members: Character[]): string {
 					` : `
 						<span class="system-group-label">SYSTEM</span>
 					`}
+					` : ''}
 
 					${!combatActive && members.length > 0 ? `
 						<button
@@ -1606,19 +1836,20 @@ function render(): void {
 		`
 		: `
 			<div class="group-list">
-				${[...getGroupedCharacters().entries()]
-					.map(([group, members]) =>
-						renderGroup(
-							group,
-							members.sort((a, b) =>
-                a.name.localeCompare(b.name, undefined, {
-                  sensitivity: 'base'
-                })
-              )
-						)
+			${[...getDisplayGroups().entries()]
+				.map(([group, members]) =>
+					renderGroup(
+						group,
+						members.sort((a, b) =>
+							a.name.localeCompare(b.name, undefined, {
+								sensitivity: 'base'
+							})
+						),
+						currentUserRole === 'PLAYER' && group === 'E_Enemies'
 					)
-					.join('')}
-			</div>
+				)
+				.join('')}
+		</div>
 		`
 
 	app!.innerHTML = `
@@ -1723,7 +1954,6 @@ function render(): void {
 
 // Editing character and encounter data
 app.addEventListener('change', event => {
-	if (currentUserRole !== 'GM') return
 
 	const target = event.target
 
@@ -1736,6 +1966,7 @@ app.addEventListener('change', event => {
 	if (!character || !field) return
 
 	target.setCustomValidity('')
+	if (!canEditCharacter(character)) return
 
 	if (field === 'initiative') {
 		if (target.value.trim() === '') {
@@ -1784,11 +2015,13 @@ app.addEventListener('change', event => {
 		}
 	}
 
-	// Initiative and conditions belong to the current encounter.
 	if (field === 'initiative' || field === 'condition') {
-		void persistSceneState()
+		if (currentUserRole === 'GM') {
+			void persistSceneState()
+		} else {
+			void persistOwnedEncounterState(character)
+		}
 	} else {
-		// Character attributes are persistent.
 		void persistCharacter(character)
 	}
 
@@ -2058,6 +2291,8 @@ async function refreshRoomPresence(
 		OBR.player.getName(),
 		OBR.player.getConnectionId()
 	])
+
+	currentUserId = OBR.player.id
 
 	const players = otherPlayers ?? await OBR.party.getPlayers()
 
