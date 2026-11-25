@@ -1038,3 +1038,108 @@ button:disabled {
 .combat-order .character-card.enemy-redacted-card {
 	min-height: 54px;
 }
+
+/* Token image avatars */
+
+.character-avatar {
+	overflow: hidden;
+	padding: 0;
+}
+
+.character-avatar-image {
+	display: block;
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+	border-radius: inherit;
+}
+
+/* Owner information */
+
+.owner-value {
+	min-width: 0;
+	overflow: hidden;
+	color: var(--text);
+	font-size: 11px;
+	font-weight: 600;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* Full-detail read-only cards */
+
+.readonly-detailed-card .character-information {
+	flex: 1;
+	min-width: 0;
+}
+
+.readonly-detailed-card .character-heading h3 {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	color: var(--text);
+	font-size: 13px;
+	font-weight: 700;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.readonly-detailed-card .character-stats {
+	display: grid;
+	grid-template-columns: 1.1fr 1fr 1fr 0.8fr;
+	gap: 5px;
+}
+
+.readonly-detailed-card .character-stat {
+	display: flex;
+	min-width: 0;
+	flex-direction: column;
+	gap: 3px;
+}
+
+.readonly-detailed-card .character-stat strong {
+	font-size: 12px;
+	font-weight: 700;
+	font-variant-numeric: tabular-nums;
+}
+
+.readonly-detailed-card .hp-stat strong {
+	color: var(--green);
+}
+
+.readonly-detailed-card .temp-stat strong {
+	color: #65b9dd;
+}
+
+.readonly-detailed-card .ac-stat strong {
+	color: #e3c17b;
+}
+
+/* Identifiable enemy cards */
+
+.enemy-readonly-card {
+	min-height: 76px;
+}
+
+.enemy-readonly-card .readonly-character-info {
+	flex: 1;
+	min-width: 0;
+}
+
+.enemy-readonly-card .readonly-card-heading h3 {
+	margin: 0 0 6px;
+	overflow: hidden;
+	color: var(--text);
+	font-size: 13px;
+	font-weight: 700;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.enemy-readonly-card .hp-track {
+	margin-top: 0;
+}
+
+.enemy-readonly-card .readonly-initiative {
+	flex: 0 0 42px;
+}

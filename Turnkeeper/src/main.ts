@@ -1,5 +1,5 @@
 
-import OBR, { type Item } from '@owlbear-rodeo/sdk'
+import OBR, { isImage, type Item } from '@owlbear-rodeo/sdk'
 import './style.css'
 import { drawToken, clearTokenDrawing } from './DrawToken'
 
@@ -116,7 +116,8 @@ const tokenMetadataSignatures = new Map<string, string>()
 const pendingCharacterWrites = new Map<string, Promise<void>>()
 let lastSceneStateSignature = ''
 
-// Owlbear token ownership
+// Owlbear token ownership and image
+const tokenImageUrls = new Map<string, string>()
 const tokenOwnerIds = new Map<string, string>()
 let currentUserId = ''
 
@@ -195,6 +196,8 @@ function removeLocalCharacter(tokenId: string): boolean {
 	conditions.delete(character)
 	tokenOwnerIds.delete(tokenId)
 
+	tokenImageUrls.delete(tokenId)
+
 	const index = characters.indexOf(character)
 
 	if (index !== -1) {
@@ -225,6 +228,20 @@ function syncTrackedCharacters(items: Item[]): boolean {
 		if (!record || !record.tracked) continue
 
 		trackedTokenIds.add(item.id)
+
+		// Remember the token's actual image for its sidebar avatar.
+		const imageUrl = isImage(item) ? item.image.url : null
+		const previousImageUrl = tokenImageUrls.get(item.id) ?? null
+
+		if (imageUrl !== previousImageUrl) {
+			if (imageUrl) {
+				tokenImageUrls.set(item.id, imageUrl)
+			} else {
+				tokenImageUrls.delete(item.id)
+			}
+
+			changed = true
+		}
 
 		// Track Owlbear's native token owner.
 		const ownerId = item.createdUserId ?? ''
@@ -291,6 +308,8 @@ function resetLocalSceneState(): void {
 	statblockFilenames.clear()
 	tokenMetadataSignatures.clear()
 	tokenOwnerIds.clear()
+
+	tokenImageUrls.clear()
 
 	groups.splice(0, groups.length, 'Ungrouped')
 
@@ -945,6 +964,28 @@ function escapeHtml(value: string): string {
 		.replace(/'/g, '&#039;')
 }
 
+function getCharacterAvatarContent(character: Character): string {
+	const tokenId = characterToToken.get(character)
+	const imageUrl = tokenId
+		? tokenImageUrls.get(tokenId)
+		: undefined
+
+	if (imageUrl) {
+		return `
+			<img
+				class="character-avatar-image"
+				src="${escapeHtml(imageUrl)}"
+				alt=""
+				aria-hidden="true"
+			/>
+		`
+	}
+
+	return escapeHtml(
+		character.name.charAt(0).toUpperCase() || '?'
+	)
+}
+
 function getInitiativeBonus(character: Character): number {
 	return initiativeBonuses.get(character) ?? 0
 }
@@ -1425,13 +1466,13 @@ function renderCharacterCard(character: Character): string {
 	const canEdit = canEditCharacter(character)
 	const category = getGroupCategory(character.group)
 
-	// Unowned enemies get a more restrictive, anonymous card.
+	// An unowned enemy is identifiable, but its numerical stats remain hidden.
 	const restrictedEnemy =
 		currentUserRole === 'PLAYER' &&
 		!canEdit &&
 		(category === 'E' || category === 'U')
 
-	// Calculate HP bar proportions.
+	// Shared character information.
 	const hp = Math.max(0, character.hp)
 	const tempHp = Math.max(0, character.tempHp)
 	const maxHp = Math.max(0, character.maxHp)
@@ -1461,7 +1502,8 @@ function renderCharacterCard(character: Character): string {
 	const initiativeBonus = getInitiativeBonus(character)
 	const condition = conditions.get(character) ?? ''
 
-	// Shared HP bar markup.
+	const avatar = getCharacterAvatarContent(character)
+
 	const hpBar = `
 		<div class="hp-track">
 			<div
@@ -1475,7 +1517,6 @@ function renderCharacterCard(character: Character): string {
 		</div>
 	`
 
-	// Conditions are only displayed when one exists.
 	const conditionDisplay = condition
 		? `
 			<div class="readonly-condition">
@@ -1485,30 +1526,22 @@ function renderCharacterCard(character: Character): string {
 		`
 		: ''
 
+	const initiativeDisplay = `
+		<div class="initiative-result readonly-initiative">
+			<span>INIT</span>
+			<strong>${initiative ?? '—'}</strong>
+		</div>
+	`
+
 	// -------------------------------------------------------------------------
-	// ENEMY: anonymous, read-only card
+	// ENEMY: identifiable, but without numerical stats.
 	// -------------------------------------------------------------------------
 
 	if (restrictedEnemy) {
 		return `
-			<article class="character-card readonly-card enemy-redacted-card ${isActive ? 'active' : ''}">
-				<div class="enemy-redacted-info">
-					${hpBar}
-					${conditionDisplay}
-				</div>
-			</article>
-		`
-	}
-
-	// -------------------------------------------------------------------------
-	// FRIENDLY / ALLY: compact, read-only card
-	// -------------------------------------------------------------------------
-
-	if (!canEdit) {
-		return `
-			<article class="character-card readonly-card ${isActive ? 'active' : ''}">
+			<article class="character-card readonly-card enemy-readonly-card ${isActive ? 'active' : ''}">
 				<div class="character-avatar readonly-avatar">
-					${escapeHtml(character.name.charAt(0).toUpperCase() || '?')}
+					${avatar}
 				</div>
 
 				<div class="readonly-character-info">
@@ -1520,16 +1553,64 @@ function renderCharacterCard(character: Character): string {
 					${conditionDisplay}
 				</div>
 
-				<div class="initiative-result readonly-initiative">
-					<span>INIT</span>
-					<strong>${initiative ?? '—'}</strong>
-				</div>
+				${initiativeDisplay}
 			</article>
 		`
 	}
 
 	// -------------------------------------------------------------------------
-	// GM / OWNER: full editable card
+	// FRIENDLY / ALLY: full information, read-only for other players.
+	// -------------------------------------------------------------------------
+
+	if (!canEdit) {
+		return `
+			<article class="character-card readonly-card readonly-detailed-card ${isActive ? 'active' : ''}">
+				<div class="character-avatar readonly-avatar">
+					${avatar}
+				</div>
+
+				<div class="character-information">
+					<div class="character-heading">
+						<h3>${escapeHtml(character.name)}</h3>
+
+						<span class="group-tag">
+							${escapeHtml(getGroupLabel(character.group))}
+						</span>
+					</div>
+
+					<div class="character-stats">
+						<div class="character-stat hp-stat">
+							<span>HP</span>
+							<strong>${hp}</strong>
+						</div>
+
+						<div class="character-stat maxhp-stat">
+							<span>MAX</span>
+							<strong>${maxHp}</strong>
+						</div>
+
+						<div class="character-stat temp-stat">
+							<span>TEMP</span>
+							<strong>${tempHp}</strong>
+						</div>
+
+						<div class="character-stat ac-stat">
+							<span>AC</span>
+							<strong>${character.ac}</strong>
+						</div>
+					</div>
+
+					${hpBar}
+					${conditionDisplay}
+				</div>
+
+				${initiativeDisplay}
+			</article>
+		`
+	}
+
+	// -------------------------------------------------------------------------
+	// GM / OWNER: full editable card.
 	// -------------------------------------------------------------------------
 
 	return `
@@ -1540,7 +1621,7 @@ function renderCharacterCard(character: Character): string {
 				data-index="${index}"
 				title="${combatActive ? '' : 'Drag to move between groups'}"
 			>
-				${escapeHtml(character.name.charAt(0).toUpperCase() || '?')}
+				${avatar}
 			</div>
 
 			<div class="character-information">
@@ -1628,21 +1709,16 @@ function renderCharacterCard(character: Character): string {
 				</div>
 
 				<div class="assignment-row">
-					<label for="player-${index}">PLAYER</label>
-					<input
-						id="player-${index}"
-						type="text"
-						value="${escapeHtml(character.attachedPlayer)}"
-						placeholder="Unassigned"
-						data-field="attachedPlayer"
-						data-index="${index}"
-						aria-label="Attached player"
-					/>
+					<label>OWNER</label>
+					<span class="owner-value">
+						${escapeHtml(getCharacterOwnerLabel(character))}
+					</span>
 				</div>
 			</div>
 
 			<div class="initiative-control">
 				<label for="initiative-${index}">INIT</label>
+
 				<input
 					id="initiative-${index}"
 					class="initiative-input"
