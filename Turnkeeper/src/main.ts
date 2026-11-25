@@ -1420,7 +1420,10 @@ function renameGroup(oldGroup: string): void {
 	void Promise.all(
 		characters
 			.filter(character => character.group === newGroup)
-			.map(character => persistCharacter(character))
+			.map(async character => {
+				await persistCharacter(character)
+				await updateTokenDrawing(character)
+			})
 	)
 
 	void persistSceneState()
@@ -2325,13 +2328,17 @@ app.addEventListener('drop', event => {
 
 	if (!groups.includes(destinationGroup)) return
 
-	// Move the character to the destination group
-	draggedCharacter.group = destinationGroup
-	void persistCharacter(draggedCharacter)
-	void persistSceneState()
+	// Move the character to the destination group.
+	const movedCharacter = draggedCharacter
+	movedCharacter.group = destinationGroup
+
+	// Persist the updated group on the token.
+	void persistCharacter(movedCharacter)
+
+	// Redraw immediately using the new group category.
+	void updateTokenDrawing(movedCharacter)
+
 	draggedCharacter = null
-
-
 	render()
 })
 
