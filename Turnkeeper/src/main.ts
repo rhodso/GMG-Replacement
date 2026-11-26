@@ -2,7 +2,7 @@
 import OBR, { isImage, type Item } from '@owlbear-rodeo/sdk'
 import './style.css'
 import { drawToken, clearTokenDrawing } from './DrawToken'
-import { getStatblockList, getStatblock, type Statblock } from './StatblockApi'
+import { getStatblockList, getStatblock} from './StatblockApi'
 
 import {
 	TURNKEEPER_EXTENSION_ID,
@@ -937,18 +937,6 @@ function canEditCharacter(character: Character): boolean {
 	if (currentUserRole === 'GM') return true
 
 	return isCharacterOwner(character)
-}
-
-function canViewCharacter(character: Character): boolean {
-	if (currentUserRole === 'GM') return true
-	if (currentUserRole !== 'PLAYER') return false
-	if (isCharacterOwner(character)) return true
-
-	const category = getGroupCategory(character.group)
-
-	// Players can see friendly characters they don't own,
-	// but cannot see unowned enemies or unclassified characters.
-	return category === 'P' || category === 'A'
 }
 
 function getCharacterOwnerLabel(character: Character): string {
