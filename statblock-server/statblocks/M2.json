@@ -1,0 +1,11 @@
+{
+	"filename": "M2",
+	"name": "Marker 2",
+	"HP": 20,
+	"MxHP": 30,
+	"TmpHP": 0,
+	"AC": 17,
+	"Group": "E_Enemies",
+	"AttachedPlayer": "",
+	"initiativeBonus": 1
+}

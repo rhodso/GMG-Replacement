@@ -2,6 +2,7 @@
 import OBR, { isImage, type Item } from '@owlbear-rodeo/sdk'
 import './style.css'
 import { drawToken, clearTokenDrawing } from './DrawToken'
+import { getStatblockList, getStatblock, type Statblock } from './StatblockApi'
 
 import {
 	TURNKEEPER_EXTENSION_ID,
@@ -42,55 +43,6 @@ interface RoomMember {
 let currentUserRole: OwlbearRole | null = null
 let currentUserName = ''
 let roomMembers: RoomMember[] = []
-
-// All of this is temporary and will be replaced eventually with the stuff from API calls
-interface Statblock {
-	filename: string
-	name: string
-	HP: number
-	MxHP: number
-	TmpHP: number
-	AC: number
-	Group: string
-	AttachedPlayer: string
-	initiativeBonus: number
-}
-
-const statblocks: Statblock[] = [
-	{
-		filename: 'Goblin Warrior',
-		name: 'Goblin Warrior',
-		HP: 12,
-		MxHP: 12,
-		TmpHP: 0,
-		AC: 13,
-		Group: 'E_Goblins',
-		AttachedPlayer: '',
-		initiativeBonus: 2
-	},
-	{
-		filename: 'Arannis',
-		name: 'Arannis',
-		HP: 85,
-		MxHP: 100,
-		TmpHP: 10,
-		AC: 18,
-		Group: 'P_Players',
-		AttachedPlayer: '',
-		initiativeBonus: 3
-	},
-	{
-		filename: 'M1',
-		name: 'Marker 1',
-		HP: 10,
-		MxHP: 12,
-		TmpHP: 5,
-		AC: 15,
-		Group: 'P_Players',
-		AttachedPlayer: '',
-		initiativeBonus: 3
-	}
-]
 
 const characters: Character[] = []
 
@@ -649,23 +601,6 @@ async function setupTurnkeeperPersistence(): Promise<void> {
 	await initialiseScene()
 }
 
-// Statblock Retrieval Helpers
-async function getStatblockList(): Promise<string[]> {
-	// Future API request:
-	// GET api.php?request=0
-
-	return statblocks.map(statblock => statblock.filename)
-}
-
-async function getStatblock(filename: string): Promise<Statblock | null> {
-	// Future API request:
-	// GET api.php?request=1&sb=[filename]
-
-	return statblocks.find(
-		statblock => statblock.filename === filename
-	) ?? null
-}
-
 function normaliseStatblockName(name: string): string {
 	return name
 		.normalize('NFD')
@@ -839,8 +774,6 @@ async function addTokensToTurnkeeper(tokens: TokenReference[]): Promise<void> {
 		}
 
 		for (const token of pendingTokens) {
-			if (filenames.length === 0) continue
-
 			const tokenName = token.name.trim()
 
 			if (!tokenName) {
@@ -848,54 +781,56 @@ async function addTokensToTurnkeeper(tokens: TokenReference[]): Promise<void> {
 				continue
 			}
 
-			const match = findClosestStatblock(tokenName, filenames)
-
-			if (!match) {
-				failures.push(tokenName)
-				continue
-			}
-
-			const statblock = await getStatblock(match.filename)
-
-			if (!statblock) {
-				failures.push(tokenName)
-				continue
-			}
-
-			const character: Character = {
-				name: statblock.name || tokenName,
-				hp: statblock.HP,
-				maxHp: statblock.MxHP,
-				tempHp: statblock.TmpHP,
-				ac: statblock.AC,
-				group: statblock.Group || 'Ungrouped',
-				attachedPlayer: statblock.AttachedPlayer || ''
-			}
-
-			const record: StoredCharacterRecord = {
-				version: 1,
-				tracked: true,
-				character,
-				initiativeBonus: statblock.initiativeBonus ?? 0,
-				statblockFilename: match.filename
-			}
-
 			try {
-				// Register locally first so our own metadata notification
-				// doesn't cause a second registration and redraw.
+				const match = findClosestStatblock(tokenName, filenames)
+
+				if (!match) {
+					failures.push(tokenName)
+					continue
+				}
+
+				const statblock = await getStatblock(match.filename)
+
+				if (!statblock) {
+					failures.push(tokenName)
+					continue
+				}
+
+				const character: Character = {
+					name: statblock.name || tokenName,
+					hp: statblock.HP,
+					maxHp: statblock.MxHP,
+					tempHp: statblock.TmpHP,
+					ac: statblock.AC,
+					group: statblock.Group || 'Ungrouped',
+					attachedPlayer: statblock.AttachedPlayer || ''
+				}
+
+				const record: StoredCharacterRecord = {
+					version: 1,
+					tracked: true,
+					character,
+					initiativeBonus: statblock.initiativeBonus ?? 0,
+					statblockFilename: match.filename
+				}
+
+				// Register locally first.
 				const registeredCharacter = registerStoredCharacter(
 					token.id,
 					record
 				)
 
-				await writeCharacterRecord(token.id, record)
-				await updateTokenDrawing(registeredCharacter)
-
-				added++
+				try {
+					await writeCharacterRecord(token.id, record)
+					await updateTokenDrawing(registeredCharacter)
+					added++
+				} catch (error) {
+					removeLocalCharacter(token.id)
+					throw error
+				}
 			} catch (error) {
-				console.error(`Failed to save ${tokenName}:`, error)
+				console.error(`Failed to retrieve or save ${tokenName}:`, error)
 				failures.push(tokenName)
-				removeLocalCharacter(token.id)
 			}
 		}
 	}
