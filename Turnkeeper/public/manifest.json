@@ -4,8 +4,8 @@
 	"manifest_version": 1,
 	"action": {
 		"title": "Turnkeeper",
-		"icon": "/icon.svg",
-		"popover": "/",
+		"icon": "https://rhodso.github.io/Turnkeeper/icon.svg",
+		"popover": "https://rhodso.github.io/Turnkeeper/",
 		"height": 850,
 		"width": 400
 	}
