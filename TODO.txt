@@ -1,0 +1,10 @@
+
+TO DO for MVP:
+✓ Setup user-role based viewing (GM vs Player)
+✓ Remember tokens that already exist in the scene
+✓ Setup user control over tokens (with GM override) (add dropdown)
+
+Post MVP:
+✓ Integrate statblock API
+- Write back to statblock server for remembering token attributes
+
