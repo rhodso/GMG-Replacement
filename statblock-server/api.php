@@ -1,4 +1,28 @@
 <?php
+$origin = $_SERVER['HTTP_ORIGIN'] ?? '';
+
+// Will be uncommented in prod
+// $allowedOrigins = [
+// 	'https://www.owlbear.rodeo',
+// 	'http://localhost:5173',
+// 	'https://YOUR-TURNKEEPER-HOST'
+// ];
+
+// if (in_array($origin, $allowedOrigins, true)) {
+// 	header("Access-Control-Allow-Origin: $origin");
+// 	header('Vary: Origin');
+// }
+
+header('Access-Control-Allow-Origin: *'); // tmp, removed in prod
+header('Access-Control-Allow-Methods: GET, OPTIONS');
+header('Access-Control-Allow-Headers: Content-Type');
+
+// Handle browser preflight requests
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+	http_response_code(204);
+	exit;
+}
+
 require_once 'check.php';
 // phpinfo();
 
@@ -32,7 +56,10 @@ function get_sb()
 {
 	// $list = scandir('statblocks');
 	$list = glob("./statblocks/*.json");
-	$new_list = array_map(function($x) {return basename($x)}, $list)
+	$new_list = array_map(function ($x) {
+		return basename($x);
+	}, $list);
+	return $new_list;
 }
 
 // Test requests
