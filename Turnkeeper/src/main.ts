@@ -1474,6 +1474,15 @@ function renderCharacterCard(character: Character): string {
 						<span class="group-tag">
 							${escapeHtml(getGroupLabel(character.group))}
 						</span>
+
+						${currentUserRole === 'GM' ? `
+							<button
+								class="switch-statblock-button"
+								data-action="switch-statblock"
+								data-index="${index}"
+								title="Switch this character's statblock"
+							>Switch</button>
+						` : ''}
 					</div>
 
 					<div class="character-stats">
@@ -2048,6 +2057,16 @@ app.addEventListener('click', event => {
 				void persistOwnedEncounterState(character)
 			}
 
+			break
+		}
+
+		case 'switch-statblock': {
+			if (currentUserRole !== 'GM') break
+
+			const character = characters[Number(button.dataset.index)]
+			if (!character) break
+
+			window.alert(`Statblock switching for "${character.name}" will be implemented next.`)
 			break
 		}
 
